@@ -1,4 +1,4 @@
-name: Build spotifyd (patched) + luci-app-spotifyd (x86_64 & aarch64_generic)
+name: Build spotifyd (patched) for OpenWrt (x86_64 & aarch64)
 
 on:
   push:
@@ -15,12 +15,10 @@ jobs:
           - name: x86_64
             url: https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
           - name: aarch64_generic
-            # gunakan filogic (mediatek) agar output arch = aarch64_generic
             url: https://downloads.openwrt.org/releases/23.05.3/targets/mediatek/filogic/openwrt-sdk-23.05.3-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install deps
         run: |
@@ -33,47 +31,30 @@ jobs:
           tar xf sdk.tar.xz
           echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
 
-      # ❗ Perbaikan: JANGAN menambah feed 'packages' / 'luci' lagi
-      # Tambahkan feed eksternal saja (kiddin9) agar luci-app-spotifyd tersedia.
-      - name: Prepare feeds (add kiddin9 only)
+      - name: Update default feeds only
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # tambah jika belum ada
-          if ! grep -q 'src-git[[:space:]]\+kiddin9' feeds.conf.default 2>/dev/null; then
-            echo "src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git" >> feeds.conf.default
-          fi
-
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-          # pastikan luci-app-spotifyd dari feed eksternal terpasang ke build system
-          ./scripts/feeds install luci-app-spotifyd || true
 
       - name: Copy our package into SDK
         run: |
           mkdir -p "${{ env.SDK_DIR }}/package/sound"
           rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
 
-      - name: Build packages
+      - name: Build spotifyd
         working-directory: ${{ env.SDK_DIR }}
         env:
           FORCE_UNSAFE_CONFIGURE: 1
         run: |
           make defconfig
-
-          # build spotifyd patched
           make package/spotifyd-ng/compile V=sc
-
-          # build luci-app-spotifyd (opsional; kalau feed tak punya, ini tidak fail)
-          make package/luci-app-spotifyd/compile V=sc || true
-
           mkdir -p ../out/${{ matrix.sdk.name }}
           find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
-          find bin -name "luci-app-spotifyd*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: openwrt_${{ matrix.sdk.name }}_ipk
           path: out/${{ matrix.sdk.name }}/
-          if-no-files-found: warn
+          if-no-files-found: error
