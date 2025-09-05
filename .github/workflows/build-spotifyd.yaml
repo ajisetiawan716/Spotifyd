@@ -1,4 +1,4 @@
-name: Build spotifyd (patched) - OpenWrt 24.x fast
+name: Build spotifyd (patched) - autodetect SDK
 
 on:
   push:
@@ -14,11 +14,10 @@ jobs:
         sdk:
           - name: x86_64
             target_path: x86/64
-            # pola nama file SDK yang kita cari di index:
-            pattern: 'openwrt-sdk-[^"]*-x86-64_gcc-[^"]*_musl\.Linux-x86_64\.tar\.xz'
+            target_key: x86-64         # dipakai buat filter nama file
           - name: aarch64_generic
             target_path: mediatek/filogic
-            pattern: 'openwrt-sdk-[^"]*-mediatek-filogic_gcc-[^"]*_musl\.Linux-x86_64\.tar\.xz'
+            target_key: mediatek-filogic
 
     steps:
       - uses: actions/checkout@v4
@@ -28,23 +27,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential python3 wget xz-utils git rsync pkg-config curl
 
-      # Cari SDK di releases 24.x (coba 24.10.0, 24.10, 24.07.0, 24.07), lalu fallback ke snapshots
-      - name: Resolve SDK URL dynamically
+      # === Cari SDK secara dinamis ===
+      - name: Resolve SDK URL dynamically (24.x → snapshots → 23.05.5)
         id: sdkurl
+        env:
+          TARGET_PATH: ${{ matrix.sdk.target_path }}
+          TARGET_KEY:  ${{ matrix.sdk.target_key }}
         run: |
           set -euo pipefail
-          TARGET="${{ matrix.sdk.target_path }}"
-          PATTERN='${{ matrix.sdk.pattern }}'
 
-          try_release_dir () {
-            local REL="$1"
-            local BASE="https://downloads.openwrt.org/releases/${REL}/targets/${TARGET}/"
+          pick_from_dir () {
+            local BASE="$1"           # base URL yg di-probing
+            local KEY="$2"            # x86-64 / mediatek-filogic
             echo ">> probing $BASE" >&2
-            # ambil listing html lalu grep nama tarball sdk
+            # Ambil list nama file (tanpa asumsi HTML), lalu filter yg pasti SDK utk target itu
             local FILE
-            FILE=$(curl -fsSL "$BASE" | grep -oE "$PATTERN" | head -n1 || true)
+            FILE=$(curl -fsSL "$BASE" \
+              | grep -oE "openwrt-sdk-[^\"[:space:]]*-${KEY}_[^\"[:space:]]*\.tar\.xz" \
+              | head -n1 || true)
             if [ -n "${FILE:-}" ]; then
-              echo "Found in releases $REL: $FILE" >&2
               echo "${BASE}${FILE}"
               return 0
             fi
@@ -52,31 +53,39 @@ jobs:
           }
 
           URL=""
+          # 1) coba releases 24.x (beberapa kemungkinan patch version)
           for REL in 24.10.0 24.10 24.07.0 24.07; do
-            if URL="$(try_release_dir "$REL")"; then
+            BASE="https://downloads.openwrt.org/releases/${REL}/targets/${TARGET_PATH}/"
+            if URL="$(pick_from_dir "$BASE" "$TARGET_KEY")"; then
+              echo "Found in releases ${REL}" >&2
               break
             fi
           done
 
+          # 2) fallback snapshots
           if [ -z "$URL" ]; then
-            # fallback snapshots
-            BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET}/"
-            echo ">> fallback probing snapshots $BASE" >&2
-            FILE=$(curl -fsSL "$BASE" | grep -oE "$PATTERN" | head -n1 || true)
-            if [ -n "${FILE:-}" ]; then
-              URL="${BASE}${FILE}"
-              echo "Found in snapshots: $FILE" >&2
+            BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET_PATH}/"
+            if URL="$(pick_from_dir "$BASE" "$TARGET_KEY")"; then
+              echo "Found in snapshots" >&2
+            fi
+          fi
+
+          # 3) fallback stabil terakhir 23.05.5
+          if [ -z "$URL" ]; then
+            BASE="https://downloads.openwrt.org/releases/23.05.5/targets/${TARGET_PATH}/"
+            if URL="$(pick_from_dir "$BASE" "$TARGET_KEY")"; then
+              echo "FALLBACK to 23.05.5" >&2
             fi
           fi
 
           if [ -z "$URL" ]; then
-            echo "ERROR: No SDK tarball found for target ${TARGET}" >&2
+            echo "ERROR: No SDK tarball found for target ${TARGET_PATH}" >&2
             exit 1
           fi
 
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Download OpenWrt SDK
+      - name: Download & extract OpenWrt SDK
         run: |
           wget -q "${{ steps.sdkurl.outputs.url }}" -O sdk.tar.xz
           tar xf sdk.tar.xz
@@ -88,7 +97,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SDK_DIR }}/dl
-          key: dl-${{ matrix.sdk.name }}-24x
+          key: dl-${{ matrix.sdk.name }}-auto
 
       - name: Cache Cargo registry/git
         uses: actions/cache@v4
@@ -96,19 +105,19 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ matrix.sdk.name }}-24x-${{ hashFiles('package/**/Makefile') }}
+          key: cargo-${{ matrix.sdk.name }}-auto-${{ hashFiles('package/**/Makefile') }}
 
       - name: Cache sccache (Rust)
         uses: actions/cache@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-${{ matrix.sdk.name }}-24x-${{ hashFiles('package/**/Makefile') }}
+          key: sccache-${{ matrix.sdk.name }}-auto-${{ hashFiles('package/**/Makefile') }}
 
       - name: Prepare feeds (minimal)
         working-directory: ${{ env.SDK_DIR }}
         run: |
           ./scripts/feeds update -a
-          # hanya yang dibutuhkan buat spotifyd (Rust)
+          # install hanya dep build yg dibutuhkan spotifyd (Rust + libs)
           ./scripts/feeds install rust cargo alsa-lib openssl
 
       - name: Copy spotifyd package into SDK
@@ -133,6 +142,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt24_${{ matrix.sdk.name }}_ipk
+          name: openwrt_${{ matrix.sdk.name }}_ipk
           path: out/${{ matrix.sdk.name }}/
           if-no-files-found: error
