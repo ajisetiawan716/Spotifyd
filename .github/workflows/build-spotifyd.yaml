@@ -1,0 +1,76 @@
+name: Build spotifyd (patched) + luci-app-spotifyd (x86_64 & aarch64_generic)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-22-04
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk:
+          - name: x86_64
+            url: https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - name: aarch64_generic
+            # gunakan filogic (mediatek) untuk menghasilkan arch aarch64_generic
+            url: https://downloads.openwrt.org/releases/23.05.3/targets/mediatek/filogic/openwrt-sdk-23.05.3-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 wget xz-utils git rsync
+
+      - name: Download OpenWrt SDK
+        run: |
+          wget -q "${{ matrix.sdk.url }}" -O sdk.tar.xz
+          tar xf sdk.tar.xz
+          echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
+
+      - name: Prepare feeds (packages, luci, kiddin9)
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          # feeds standar
+          echo "src-git packages https://github.com/openwrt/packages.git" >> feeds.conf.default
+          echo "src-git luci https://github.com/openwrt/luci.git" >> feeds.conf.default
+          # feed komunitas yang berisi luci-app-spotifyd
+          echo "src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git" >> feeds.conf.default
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          # pastikan paket luci-app-spotifyd tersedia dari feed
+          ./scripts/feeds install luci-app-spotifyd || true
+
+      - name: Copy our package into SDK
+        run: |
+          mkdir -p "${{ env.SDK_DIR }}/package/sound"
+          rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
+
+      - name: Build packages
+        working-directory: ${{ env.SDK_DIR }}
+        env:
+          FORCE_UNSAFE_CONFIGURE: 1
+        run: |
+          make defconfig
+          # build spotifyd-ng
+          make package/spotifyd-ng/compile V=sc
+          # build luci-app-spotifyd (dari feed)
+          make package/luci-app-spotifyd/compile V=sc || true
+
+          mkdir -p ../out/${{ matrix.sdk.name }}
+          find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
+          find bin -name "luci-app-spotifyd*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt_${{ matrix.sdk.name }}_ipk
+          path: out/${{ matrix.sdk.name }}/
+          if-no-files-found: warn
