@@ -1,4 +1,4 @@
-name: Build spotifyd (patched) - fast w/ rustup
+name: Build spotifyd (SDK, fast, no-rust-host)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22-04
     env:
       TERM: xterm
       KCONFIG_NONINTERACTIVE: 1
@@ -25,25 +25,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Install host deps + rustup
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential python3 wget xz-utils git rsync pkg-config curl
-
-      - name: Install rustup toolchain (host)
-        run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustc -V && cargo -V
 
-      - name: Download OpenWrt SDK
+      - name: Download & extract OpenWrt SDK
         run: |
           wget -q "${{ matrix.sdk.url }}" -O sdk.tar.xz
           tar xf sdk.tar.xz
           echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
-          echo "Using SDK dir: $SDK_DIR"
+          echo "SDK=$SDK_DIR"
 
-      # ---------- CACHES ----------
+      - name: Feeds (minimal)
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          ./scripts/feeds update -a
+          # hanya lib runtime/link yang perlu
+          ./scripts/feeds install alsa-lib openssl
+
+      - name: Copy package into SDK
+        run: |
+          mkdir -p "${{ env.SDK_DIR }}/package/sound"
+          rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
+
+      # Cache download sources dan Cargo (biar run berikutnya makin cepat)
       - name: Cache OpenWrt dl/
         uses: actions/cache@v4
         with:
@@ -64,29 +73,7 @@ jobs:
           path: ~/.cache/sccache
           key: sccache-${{ matrix.sdk.name }}-23055-${{ hashFiles('package/**/Makefile') }}
 
-      - name: Prepare feeds (minimal)
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          ./scripts/feeds update -a
-          # HANYA libs yg diperlukan (tanpa rust/host!)
-          ./scripts/feeds install alsa-lib openssl
-
-      - name: Non-interactive defconfig + build base toolchain
-        working-directory: ${{ env.SDK_DIR }}
-        env:
-          FORCE_UNSAFE_CONFIGURE: 1
-        run: |
-          make defconfig || yes "" | make olddefconfig
-          # toolchain C (cepat), TANPA rust host
-          make tools/install V=s
-          make toolchain/install V=s
-
-      - name: Copy spotifyd package into SDK
-        run: |
-          mkdir -p "${{ env.SDK_DIR }}/package/sound"
-          rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
-
-      - name: Build spotifyd (use rustup cargo)
+      - name: Build spotifyd (SDK non-interactive, use rustup cargo)
         working-directory: ${{ env.SDK_DIR }}
         env:
           FORCE_UNSAFE_CONFIGURE: 1
@@ -94,10 +81,12 @@ jobs:
           SCCACHE_DIR: ${{ runner.temp }}/.sccache
           CARGO_HOME: ~/.cargo
           RUSTFLAGS: -C debuginfo=0
-          # Pastikan cargo.mk “menemukan” cargo kita
           PATH: $HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH
         run: |
+          # Non-interactive config, jangan pernah panggil menuconfig di SDK
           make defconfig || yes "" | make olddefconfig
+
+          # Build paket kita saja
           make package/spotifyd-ng/compile V=sc
 
           mkdir -p ../out/${{ matrix.sdk.name }}
