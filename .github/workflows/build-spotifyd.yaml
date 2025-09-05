@@ -13,12 +13,12 @@ jobs:
       matrix:
         sdk:
           - name: x86_64
-            base: https://downloads.openwrt.org/releases/24.10/targets/x86/64
-            fname_prefix: openwrt-sdk-24.10-x86-64_gcc-
+            target_path: x86/64
+            # pola nama file SDK yang kita cari di index:
+            pattern: 'openwrt-sdk-[^"]*-x86-64_gcc-[^"]*_musl\.Linux-x86_64\.tar\.xz'
           - name: aarch64_generic
-            # gunakan filogic agar arch = aarch64_generic
-            base: https://downloads.openwrt.org/releases/24.10/targets/mediatek/filogic
-            fname_prefix: openwrt-sdk-24.10-mediatek-filogic_gcc-
+            target_path: mediatek/filogic
+            pattern: 'openwrt-sdk-[^"]*-mediatek-filogic_gcc-[^"]*_musl\.Linux-x86_64\.tar\.xz'
 
     steps:
       - uses: actions/checkout@v4
@@ -28,31 +28,60 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential python3 wget xz-utils git rsync pkg-config curl
 
-      - name: Resolve SDK URL (try multiple GCC versions)
+      # Cari SDK di releases 24.x (coba 24.10.0, 24.10, 24.07.0, 24.07), lalu fallback ke snapshots
+      - name: Resolve SDK URL dynamically
         id: sdkurl
         run: |
-          set -e
-          BASE="${{ matrix.sdk.base }}"
-          PREF="${{ matrix.sdk.fname_prefix }}"
-          # kandidat versi gcc yg umum di rilis 24.x
-          for GCC in 14.2.0 14.1.0 13.3.0 13.2.0; do
-            CAND="${PREF}${GCC}_musl.Linux-x86_64.tar.xz"
-            URL="${BASE}/${CAND}"
-            if curl -fsI "$URL" >/dev/null 2>&1; then
-              echo "Found SDK: $URL"
-              echo "url=$URL" >> $GITHUB_OUTPUT
-              exit 0
+          set -euo pipefail
+          TARGET="${{ matrix.sdk.target_path }}"
+          PATTERN='${{ matrix.sdk.pattern }}'
+
+          try_release_dir () {
+            local REL="$1"
+            local BASE="https://downloads.openwrt.org/releases/${REL}/targets/${TARGET}/"
+            echo ">> probing $BASE" >&2
+            # ambil listing html lalu grep nama tarball sdk
+            local FILE
+            FILE=$(curl -fsSL "$BASE" | grep -oE "$PATTERN" | head -n1 || true)
+            if [ -n "${FILE:-}" ]; then
+              echo "Found in releases $REL: $FILE" >&2
+              echo "${BASE}${FILE}"
+              return 0
+            fi
+            return 1
+          }
+
+          URL=""
+          for REL in 24.10.0 24.10 24.07.0 24.07; do
+            if URL="$(try_release_dir "$REL")"; then
+              break
             fi
           done
-          echo "SDK tarball not found under ${BASE} with known gcc versions" >&2
-          exit 1
+
+          if [ -z "$URL" ]; then
+            # fallback snapshots
+            BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET}/"
+            echo ">> fallback probing snapshots $BASE" >&2
+            FILE=$(curl -fsSL "$BASE" | grep -oE "$PATTERN" | head -n1 || true)
+            if [ -n "${FILE:-}" ]; then
+              URL="${BASE}${FILE}"
+              echo "Found in snapshots: $FILE" >&2
+            fi
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "ERROR: No SDK tarball found for target ${TARGET}" >&2
+            exit 1
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Download OpenWrt SDK
         run: |
           wget -q "${{ steps.sdkurl.outputs.url }}" -O sdk.tar.xz
           tar xf sdk.tar.xz
           echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
-          echo "SDK_DIR=$SDK_DIR"
+          echo "Using SDK dir: $SDK_DIR"
 
       # ---------- CACHES ----------
       - name: Cache OpenWrt dl/
@@ -79,7 +108,7 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           ./scripts/feeds update -a
-          # install hanya yang diperlukan untuk build spotifyd (Rust)
+          # hanya yang dibutuhkan buat spotifyd (Rust)
           ./scripts/feeds install rust cargo alsa-lib openssl
 
       - name: Copy spotifyd package into SDK
