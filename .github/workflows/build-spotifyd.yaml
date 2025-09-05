@@ -155,7 +155,7 @@ jobs:
           mkdir -p "${{ env.SDK_DIR }}/package/sound"
           rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
 
-      - name: Build spotifyd (fast)
+      - name: Build spotifyd (fast, non-interactive)
         working-directory: ${{ env.SDK_DIR }}
         env:
           FORCE_UNSAFE_CONFIGURE: 1
@@ -163,9 +163,20 @@ jobs:
           SCCACHE_DIR: ${{ runner.temp }}/.sccache
           CARGO_HOME: ~/.cargo
           RUSTFLAGS: -C debuginfo=0
+          TERM: xterm               # <-- penting agar ncurses tidak error
         run: |
+          # 1) pastikan non-interactive config
+          #    defconfig harusnya cukup; kalau ada glitch, fallback olddefconfig
+          make defconfig || yes "" | make olddefconfig
+
+          # 2) (opsional) pastikan paket kita dimark sebagai 'm' tanpa TUI:
+          ./scripts/config -m PACKAGE_spotifyd-ng || true
           make defconfig
+
+          # 3) compile paketnya
           make package/spotifyd-ng/compile V=sc
+
+          # 4) simpan hasil .ipk
           mkdir -p ../out/${{ matrix.sdk.name }}
           find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
 
