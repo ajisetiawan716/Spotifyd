@@ -1,4 +1,4 @@
-name: Build spotifyd (patched) - autodetect SDK
+name: Build spotifyd (patched) - autodetect SDK + patch rust
 
 on:
   push:
@@ -14,7 +14,7 @@ jobs:
         sdk:
           - name: x86_64
             target_path: x86/64
-            target_key: x86-64         # dipakai buat filter nama file
+            target_key: x86-64
           - name: aarch64_generic
             target_path: mediatek/filogic
             target_key: mediatek-filogic
@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential python3 wget xz-utils git rsync pkg-config curl
 
-      # === Cari SDK secara dinamis ===
+      # Cari SDK: coba releases 24.x → snapshots → fallback 23.05.5 (yang pasti ada)
       - name: Resolve SDK URL dynamically (24.x → snapshots → 23.05.5)
         id: sdkurl
         env:
@@ -37,10 +37,9 @@ jobs:
           set -euo pipefail
 
           pick_from_dir () {
-            local BASE="$1"           # base URL yg di-probing
-            local KEY="$2"            # x86-64 / mediatek-filogic
+            local BASE="$1"
+            local KEY="$2"
             echo ">> probing $BASE" >&2
-            # Ambil list nama file (tanpa asumsi HTML), lalu filter yg pasti SDK utk target itu
             local FILE
             FILE=$(curl -fsSL "$BASE" \
               | grep -oE "openwrt-sdk-[^\"[:space:]]*-${KEY}_[^\"[:space:]]*\.tar\.xz" \
@@ -53,7 +52,6 @@ jobs:
           }
 
           URL=""
-          # 1) coba releases 24.x (beberapa kemungkinan patch version)
           for REL in 24.10.0 24.10 24.07.0 24.07; do
             BASE="https://downloads.openwrt.org/releases/${REL}/targets/${TARGET_PATH}/"
             if URL="$(pick_from_dir "$BASE" "$TARGET_KEY")"; then
@@ -62,7 +60,6 @@ jobs:
             fi
           done
 
-          # 2) fallback snapshots
           if [ -z "$URL" ]; then
             BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET_PATH}/"
             if URL="$(pick_from_dir "$BASE" "$TARGET_KEY")"; then
@@ -70,7 +67,6 @@ jobs:
             fi
           fi
 
-          # 3) fallback stabil terakhir 23.05.5
           if [ -z "$URL" ]; then
             BASE="https://downloads.openwrt.org/releases/23.05.5/targets/${TARGET_PATH}/"
             if URL="$(pick_from_dir "$BASE" "$TARGET_KEY")"; then
@@ -117,8 +113,42 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           ./scripts/feeds update -a
-          # install hanya dep build yg dibutuhkan spotifyd (Rust + libs)
           ./scripts/feeds install rust cargo alsa-lib openssl
+
+      # === PATCH: matikan download-ci-llvm sebelum compile host rust ===
+      - name: Prepare & patch rust host (disable download-ci-llvm)
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -e
+          make package/feeds/packages/rust/host/prepare V=sc
+
+          # cari semua config.toml milik rustc-*-src
+          CFGS=$(find build_dir -type f -path "*host/rustc-*-src/config.toml" || true)
+          if [ -z "$CFGS" ]; then
+            echo "No rust config.toml found after prepare" >&2
+            exit 1
+          fi
+
+          for f in $CFGS; do
+            echo "--- patching $f"
+            # jika sudah ada [llvm], pastikan download-ci-llvm=false; jika belum, tambahkan bloknya
+            if grep -q '^\[llvm\]' "$f"; then
+              if grep -q '^download-ci-llvm' "$f"; then
+                sed -i 's/^download-ci-llvm.*/download-ci-llvm = false/' "$f"
+              else
+                # tambahkan opsi di bawah [llvm]
+                awk '{
+                  print $0
+                  if ($0 ~ /^\[llvm\]/ && added==0) { print "download-ci-llvm = false"; added=1 }
+                }' "$f" > "$f.new" && mv "$f.new" "$f"
+              fi
+            else
+              printf "\n[llvm]\ndownload-ci-llvm = false\n" >> "$f"
+            fi
+          done
+
+          # build host rust (sekarang tanpa download CI-LLVM)
+          make package/feeds/packages/rust/host/compile V=sc
 
       - name: Copy spotifyd package into SDK
         run: |
