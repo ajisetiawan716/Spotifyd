@@ -1,4 +1,4 @@
-name: Build spotifyd (patched) for OpenWrt (x86_64 & aarch64)
+name: Build spotifyd (patched) - OpenWrt 24.x fast
 
 on:
   push:
@@ -13,9 +13,12 @@ jobs:
       matrix:
         sdk:
           - name: x86_64
-            url: https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            base: https://downloads.openwrt.org/releases/24.10/targets/x86/64
+            fname_prefix: openwrt-sdk-24.10-x86-64_gcc-
           - name: aarch64_generic
-            url: https://downloads.openwrt.org/releases/23.05.3/targets/mediatek/filogic/openwrt-sdk-23.05.3-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            # gunakan filogic agar arch = aarch64_generic
+            base: https://downloads.openwrt.org/releases/24.10/targets/mediatek/filogic
+            fname_prefix: openwrt-sdk-24.10-mediatek-filogic_gcc-
 
     steps:
       - uses: actions/checkout@v4
@@ -23,29 +26,75 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential python3 wget xz-utils git rsync
+          sudo apt-get install -y build-essential python3 wget xz-utils git rsync pkg-config curl
+
+      - name: Resolve SDK URL (try multiple GCC versions)
+        id: sdkurl
+        run: |
+          set -e
+          BASE="${{ matrix.sdk.base }}"
+          PREF="${{ matrix.sdk.fname_prefix }}"
+          # kandidat versi gcc yg umum di rilis 24.x
+          for GCC in 14.2.0 14.1.0 13.3.0 13.2.0; do
+            CAND="${PREF}${GCC}_musl.Linux-x86_64.tar.xz"
+            URL="${BASE}/${CAND}"
+            if curl -fsI "$URL" >/dev/null 2>&1; then
+              echo "Found SDK: $URL"
+              echo "url=$URL" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+          echo "SDK tarball not found under ${BASE} with known gcc versions" >&2
+          exit 1
 
       - name: Download OpenWrt SDK
         run: |
-          wget -q "${{ matrix.sdk.url }}" -O sdk.tar.xz
+          wget -q "${{ steps.sdkurl.outputs.url }}" -O sdk.tar.xz
           tar xf sdk.tar.xz
           echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
+          echo "SDK_DIR=$SDK_DIR"
 
-      - name: Update default feeds only
+      # ---------- CACHES ----------
+      - name: Cache OpenWrt dl/
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SDK_DIR }}/dl
+          key: dl-${{ matrix.sdk.name }}-24x
+
+      - name: Cache Cargo registry/git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ matrix.sdk.name }}-24x-${{ hashFiles('package/**/Makefile') }}
+
+      - name: Cache sccache (Rust)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ matrix.sdk.name }}-24x-${{ hashFiles('package/**/Makefile') }}
+
+      - name: Prepare feeds (minimal)
         working-directory: ${{ env.SDK_DIR }}
         run: |
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          # install hanya yang diperlukan untuk build spotifyd (Rust)
+          ./scripts/feeds install rust cargo alsa-lib openssl
 
-      - name: Copy our package into SDK
+      - name: Copy spotifyd package into SDK
         run: |
           mkdir -p "${{ env.SDK_DIR }}/package/sound"
           rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
 
-      - name: Build spotifyd
+      - name: Build spotifyd (fast)
         working-directory: ${{ env.SDK_DIR }}
         env:
           FORCE_UNSAFE_CONFIGURE: 1
+          RUSTC_WRAPPER: sccache
+          SCCACHE_DIR: ${{ runner.temp }}/.sccache
+          CARGO_HOME: ~/.cargo
+          RUSTFLAGS: -C debuginfo=0
         run: |
           make defconfig
           make package/spotifyd-ng/compile V=sc
@@ -55,6 +104,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt_${{ matrix.sdk.name }}_ipk
+          name: openwrt24_${{ matrix.sdk.name }}_ipk
           path: out/${{ matrix.sdk.name }}/
           if-no-files-found: error
