@@ -3,22 +3,25 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=spotifyd-ng
 PKG_RELEASE:=1
 
+# --- Sumber: git langsung ---
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
-PKG_SOURCE_VERSION:=master
+PKG_SOURCE_VERSION:=HEAD
 PKG_MIRROR_HASH:=skip
+
+# (opsional) kalau mau nama dir build konsisten:
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_SOURCE_VERSION)
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-3.0-or-later
 PKG_MAINTAINER:=you <you@example.com>
 
-# JANGAN build rust/host (biang timeout)
+# ❌ JANGAN build rust/host (biang timeout)
 # PKG_BUILD_DEPENDS:=rust/host cargo/host
 
 include $(INCLUDE_DIR)/package.mk
 
-# --- Tentukan Rust target triple berdasar ARCH OpenWrt ---
-# x86_64 → x86_64-unknown-linux-musl
-# aarch64 → aarch64-unknown-linux-musl
+# Tentukan Rust target triple dari ARCH OpenWrt
 ifeq ($(ARCH),x86_64)
   RUST_TARGET:=x86_64-unknown-linux-musl
 else ifeq ($(ARCH),aarch64)
@@ -27,10 +30,10 @@ else
   $(error Unsupported ARCH $(ARCH) for spotifyd-ng. Add mapping to RUST_TARGET.)
 endif
 
-# Fitur spotifyd yang minimal & aman
+# Fitur spotifyd minimum
 CARGO_FEATURES:=alsa_backend daemon
 
-# (Opsional) Pin librespot untuk stabilitas
+# (Opsional) pin **librespot** ke commit stabil (hapus jika tak perlu)
 LIBRESPOT_GIT:=https://github.com/librespot-org/librespot.git
 LIBRESPOT_COMMIT:=be37402
 
@@ -48,15 +51,16 @@ define Package/spotifyd-ng/description
 Spotifyd dibangun cepat via cargo (rustup host) dan toolchain OpenWrt SDK, tanpa rust/host.
 endef
 
-# Siapkan patch librespot + config cargo untuk pakai toolchain SDK sebagai linker
+# Siapkan patch & konfigurasi linker cargo
 define Build/Prepare
 	$(call Build/Prepare/Default)
+
 	# Patch librespot ke commit tertentu (opsional)
 	echo "" >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo "[patch.crates-io]" >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo "librespot = { git = \"$(LIBRESPOT_GIT)\", rev = \"$(LIBRESPOT_COMMIT)\" }" >> $(PKG_BUILD_DIR)/Cargo.toml
 
-	# .cargo/config.toml agar cargo pakai compiler dari SDK
+	# Konfigurasi cargo agar pakai linker/ar dari SDK
 	mkdir -p $(PKG_BUILD_DIR)/.cargo
 	( \
 	  echo "[target.$(RUST_TARGET)]"; \
@@ -65,16 +69,8 @@ define Build/Prepare
 	) > $(PKG_BUILD_DIR)/.cargo/config.toml
 endef
 
-# Compile dengan cargo host (rustup), link ke libs dari SDK
+# Compile dengan cargo host (rustup), link ke sysroot SDK
 define Build/Compile
-	# Pastikan dependency target (openssl, alsa) ter-stage oleh OpenWrt
-	# OpenWrt otomatis handle karena DEPENDS di atas.
-
-	# ENV penting untuk build cross:
-	# - PKG_CONFIG_ALLOW_CROSS: izinkan cross pc
-	# - PKG_CONFIG_PATH: arahkan ke staging_dir target
-	# - OPENSSL_NO_VENDOR: pakai openssl dari SDK, bukan vendored
-	# - CC_*/AR_*: redundant karena sudah ditulis di .cargo/config.toml, tetap kita set juga.
 	cd $(PKG_BUILD_DIR) && \
 	PKG_CONFIG_ALLOW_CROSS=1 \
 	PKG_CONFIG_PATH="$(STAGING_DIR)/usr/lib/pkgconfig:$(STAGING_DIR)/usr/share/pkgconfig" \
