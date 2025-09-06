@@ -3,14 +3,15 @@ name: Build spotifyd (SDK, no-rust-host, no-cargo-mk)
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     env:
       TERM: xterm
-      KCONFIG_NONINTERACTIVE: 1
+      KCONFIG_NONINTERACTIVE: "1"
       MAKEFLAGS: -j$(nproc)
 
     strategy:
@@ -22,43 +23,58 @@ jobs:
           - name: aarch64_generic
             url: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
-    steps:
-      - uses: actions/checkout@v4
+    defaults:
+      run:
+        shell: bash
 
-      - name: Install host deps + rustup
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host deps + rustup + sccache
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y make build-essential python3 wget xz-utils git rsync pkg-config curl ca-certificates
           sudo update-ca-certificates
+          # Rustup (host) untuk tool bantu (cargo, sccache, dsb.)
           curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # Sccache untuk cache kompilasi Rust (dipakai via RUSTC_WRAPPER)
+          "$HOME/.cargo/bin/cargo" install sccache || true
           rustc -V && cargo -V
 
       - name: Download & extract OpenWrt SDK
         run: |
+          set -euxo pipefail
           wget -q "${{ matrix.sdk.url }}" -O sdk.tar.xz
           tar xf sdk.tar.xz
-          echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
-          echo "SDK=$SDK_DIR"
+          SDK_DIR_FOUND="$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n1)"
+          echo "SDK_DIR=$SDK_DIR_FOUND" >> "$GITHUB_ENV"
+          echo "Resolved SDK_DIR: $SDK_DIR_FOUND"
 
-      - name: Feeds (minimal)
+      - name: Update & install minimal feeds
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          set -euxo pipefail
           ./scripts/feeds update -a
-          # install lib runtime yang umum dipakai
+          # Install lib runtime umum (opsional, sesuaikan kebutuhan paket)
           ./scripts/feeds install alsa-lib openssl
 
       - name: Copy package into SDK
         run: |
+          set -euxo pipefail
           mkdir -p "${{ env.SDK_DIR }}/package/sound"
           rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
 
-      # Cache supaya lebih cepat
+      # Cache supaya unduhan SDK lebih cepat
       - name: Cache OpenWrt dl/
         uses: actions/cache@v4
         with:
           path: ${{ env.SDK_DIR }}/dl
           key: dl-${{ matrix.sdk.name }}-23055
+          restore-keys: |
+            dl-${{ matrix.sdk.name }}-
 
       - name: Cache Cargo registry/git
         uses: actions/cache@v4
@@ -67,42 +83,58 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: cargo-${{ matrix.sdk.name }}-23055-${{ hashFiles('package/**/Makefile') }}
+          restore-keys: |
+            cargo-${{ matrix.sdk.name }}-23055-
+            cargo-
 
       - name: Cache sccache (Rust)
         uses: actions/cache@v4
         with:
           path: ~/.cache/sccache
           key: sccache-${{ matrix.sdk.name }}-23055-${{ hashFiles('package/**/Makefile') }}
+          restore-keys: |
+            sccache-${{ matrix.sdk.name }}-23055-
+            sccache-
 
       - name: Build spotifyd (download → prepare → compile)
         working-directory: ${{ env.SDK_DIR }}
         env:
-          FORCE_UNSAFE_CONFIGURE: 1
+          FORCE_UNSAFE_CONFIGURE: "1"
           RUSTC_WRAPPER: sccache
           SCCACHE_DIR: ${{ runner.temp }}/.sccache
           CARGO_HOME: ~/.cargo
           RUSTFLAGS: -C debuginfo=0
         run: |
-          # ➕ PATH ditambah di SINI, jangan di env:
+          set -euxo pipefail
+
+          # Tambah PATH di sini (bukan global env)
           export PATH="$HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH"
 
-          # Non-interactive config (tanpa menuconfig)
+          # Non-interactive config
           make defconfig || make olddefconfig
 
-          # 1) download source (biar error fetch keliatan jelas)
+          # 1) download source
           make package/spotifyd-ng/download V=sc
 
-          # 2) prepare (unpack + Build/Prepare kita)
+          # 2) prepare (unpack + Build/Prepare)
           make package/spotifyd-ng/prepare V=sc
 
-          # sanity check: pastikan PKG_BUILD_DIR ada
-          test -d "build_dir/target-*/spotifyd-ng-*" || (echo "PKG_BUILD_DIR missing after prepare" && exit 1)
+          # 2.5) sanity check: JANGAN di-quote
+          if ! test -d build_dir/target-*/spotifyd-ng-*; then
+            echo "PKG_BUILD_DIR missing after prepare"
+            echo "==== ls build_dir ===="
+            ls -la build_dir || true
+            echo "==== find build_dir (maxdepth 2) ===="
+            find build_dir -maxdepth 2 -type d -print || true
+            exit 1
+          fi
 
           # 3) compile paket
           make package/spotifyd-ng/compile V=sc
 
+          # Kumpulkan artefak .ipk
           mkdir -p ../out/${{ matrix.sdk.name }}
-          find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
+          find bin -type f -name "*spotifyd-ng*_*.ipk" -exec cp -v {} ../out/${{ matrix.sdk.name }}/ \; || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
