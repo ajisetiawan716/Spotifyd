@@ -1,4 +1,4 @@
-name: Build spotifyd (SDK, fast, no-rust-host)
+name: Build spotifyd (SDK, fast, no-rust-host, no-cargo-mk)
 
 on:
   push:
@@ -44,7 +44,7 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           ./scripts/feeds update -a
-          # hanya lib runtime/link yang perlu
+          # install lib runtimenya saja (dependency paket akan dibangun otomatis saat compile)
           ./scripts/feeds install alsa-lib openssl
 
       - name: Copy package into SDK
@@ -52,7 +52,7 @@ jobs:
           mkdir -p "${{ env.SDK_DIR }}/package/sound"
           rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
 
-      # Caches (biar run berikutnya makin cepat)
+      # Cache sumber unduhan SDK & Cargo (percepat run berikutnya)
       - name: Cache OpenWrt dl/
         uses: actions/cache@v4
         with:
@@ -73,7 +73,7 @@ jobs:
           path: ~/.cache/sccache
           key: sccache-${{ matrix.sdk.name }}-23055-${{ hashFiles('package/**/Makefile') }}
 
-      - name: Build spotifyd (SDK non-interactive, use rustup cargo)
+      - name: Build spotifyd (SDK non-interactive, rustup cargo)
         working-directory: ${{ env.SDK_DIR }}
         env:
           FORCE_UNSAFE_CONFIGURE: 1
@@ -82,10 +82,10 @@ jobs:
           CARGO_HOME: ~/.cargo
           RUSTFLAGS: -C debuginfo=0
         run: |
-          # ➕ Tambah PATH di SINI (jangan di env:)
+          # Tambah PATH di SINI (jangan di env:)
           export PATH="$HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH"
 
-          # Non-interactive config
+          # Non-interactive (tanpa menuconfig)
           make defconfig || make olddefconfig
 
           # Build paket kita saja
