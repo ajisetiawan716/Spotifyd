@@ -1,43 +1,128 @@
-- name: Build spotifyd (download → prepare → compile)
-  working-directory: ${{ env.SDK_DIR }}
-  env:
-    FORCE_UNSAFE_CONFIGURE: 1
-    RUSTC_WRAPPER: sccache
-    SCCACHE_DIR: ${{ runner.temp }}/.sccache
-    CARGO_HOME: ~/.cargo
-    RUSTFLAGS: -C debuginfo=0
-  run: |
-    # Tambah PATH di SINI (bukan di env:)
-    export PATH="$HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH"
+name: Build spotifyd (SDK, no-rust-host, robust-prepare-check)
 
-    # Non-interactive config
-    make defconfig || make olddefconfig
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
 
-    # 1) download source (biar error fetch keliatan jelas)
-    make package/spotifyd-ng/download V=sc
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      TERM: xterm
+      KCONFIG_NONINTERACTIVE: 1
+      MAKEFLAGS: -j$(nproc)
 
-    # 2) prepare (unpack + Build/Prepare)
-    make package/spotifyd-ng/prepare V=sc
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk:
+          - name: x86_64
+            url: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - name: aarch64_generic
+            url: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
-    # 2.5) SANITY CHECK pakai find (bukan glob/test -d)
-    PKGDIR="$(find build_dir -maxdepth 2 -type d -name 'spotifyd-ng-*' | head -n1)"
-    if [ -z "$PKGDIR" ]; then
-      echo "PKG_BUILD_DIR missing after prepare"
-      echo "==== ls build_dir ===="
-      ls -la build_dir || true
-      echo "==== find build_dir (maxdepth 3) ===="
-      find build_dir -maxdepth 3 -type d -print || true
-      exit 1
-    else
-      echo "PKG_BUILD_DIR: $PKGDIR"
-      echo "==== tree $PKGDIR/.cargo ===="
-      find "$PKGDIR/.cargo" -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \; || true
-      echo "==== head Cargo.toml (patched) ===="
-      sed -n '1,120p' "$PKGDIR/Cargo.toml" || true
-    fi
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # 3) compile paket
-    make package/spotifyd-ng/compile V=sc
+      - name: Install host deps + rustup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make build-essential python3 wget xz-utils git rsync pkg-config curl ca-certificates
+          sudo update-ca-certificates
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustc -V && cargo -V
 
-    mkdir -p ../out/${{ matrix.sdk.name }}
-    find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
+      - name: Download & extract OpenWrt SDK
+        run: |
+          wget -q "${{ matrix.sdk.url }}" -O sdk.tar.xz
+          tar xf sdk.tar.xz
+          echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
+          echo "SDK=$SDK_DIR"
+
+      - name: Feeds (minimal)
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          ./scripts/feeds update -a
+          # install lib runtime yang umum dipakai oleh spotifyd
+          ./scripts/feeds install alsa-lib openssl
+
+      - name: Copy package into SDK
+        run: |
+          mkdir -p "${{ env.SDK_DIR }}/package/sound"
+          rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
+
+      # Cache untuk percepat run berikutnya
+      - name: Cache OpenWrt dl/
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SDK_DIR }}/dl
+          key: dl-${{ matrix.sdk.name }}-23055
+
+      - name: Cache Cargo registry/git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ matrix.sdk.name }}-23055-${{ hashFiles('package/**/Makefile') }}
+
+      - name: Cache sccache (Rust)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ matrix.sdk.name }}-23055-${{ hashFiles('package/**/Makefile') }}
+
+      - name: Build spotifyd (download → prepare → compile)
+        shell: bash
+        working-directory: ${{ env.SDK_DIR }}
+        env:
+          FORCE_UNSAFE_CONFIGURE: 1
+          RUSTC_WRAPPER: sccache
+          SCCACHE_DIR: ${{ runner.temp }}/.sccache
+          CARGO_HOME: ~/.cargo
+          RUSTFLAGS: -C debuginfo=0
+        run: |
+          # Tambah PATH di sini (jangan di env:)
+          export PATH="$HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH"
+
+          # Non-interactive config (tanpa menuconfig)
+          make defconfig || make olddefconfig
+
+          # 1) download source (biar error fetch terlihat jelas)
+          make package/spotifyd-ng/download V=sc
+
+          # 2) prepare (unpack + Build/Prepare)
+          make package/spotifyd-ng/prepare V=sc
+
+          # 2.5) SANITY CHECK pakai find (bukan glob/test -d)
+          PKGDIR="$(find build_dir -maxdepth 2 -type d -name 'spotifyd-ng-*' | head -n1)"
+          if [ -z "$PKGDIR" ]; then
+            echo "PKG_BUILD_DIR missing after prepare"
+            echo "==== ls build_dir ===="
+            ls -la build_dir || true
+            echo "==== find build_dir (maxdepth 3) ===="
+            find build_dir -maxdepth 3 -type d -print || true
+            exit 1
+          else
+            echo "PKG_BUILD_DIR: $PKGDIR"
+            echo "==== .cargo/config.toml ===="
+            [ -f "$PKGDIR/.cargo/config.toml" ] && cat "$PKGDIR/.cargo/config.toml" || echo "(missing)"
+            echo "==== head Cargo.toml (patched) ===="
+            sed -n '1,120p' "$PKGDIR/Cargo.toml" || true
+          fi
+
+          # 3) compile paket
+          make package/spotifyd-ng/compile V=sc
+
+          mkdir -p ../out/${{ matrix.sdk.name }}
+          find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt_${{ matrix.sdk.name }}_ipk
+          path: out/${{ matrix.sdk.name }}/
+          if-no-files-found: error
