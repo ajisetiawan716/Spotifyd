@@ -28,7 +28,7 @@ jobs:
       - name: Install host deps + rustup
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential python3 wget xz-utils git rsync pkg-config curl
+          sudo apt-get install -y make build-essential python3 wget xz-utils git rsync pkg-config curl
           curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustc -V && cargo -V
@@ -52,7 +52,7 @@ jobs:
           mkdir -p "${{ env.SDK_DIR }}/package/sound"
           rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
 
-      # Cache download sources dan Cargo (biar run berikutnya makin cepat)
+      # Caches (biar run berikutnya makin cepat)
       - name: Cache OpenWrt dl/
         uses: actions/cache@v4
         with:
@@ -81,10 +81,12 @@ jobs:
           SCCACHE_DIR: ${{ runner.temp }}/.sccache
           CARGO_HOME: ~/.cargo
           RUSTFLAGS: -C debuginfo=0
-          PATH: $HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH
         run: |
-          # Non-interactive config, jangan pernah panggil menuconfig di SDK
-          make defconfig || yes "" | make olddefconfig
+          # ➕ Tambah PATH di SINI (jangan di env:)
+          export PATH="$HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH"
+
+          # Non-interactive config
+          make defconfig || make olddefconfig
 
           # Build paket kita saja
           make package/spotifyd-ng/compile V=sc
