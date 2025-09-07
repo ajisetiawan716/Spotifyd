@@ -19,6 +19,9 @@ jobs:
           - target: x86_64
             pretty: x86-64
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - target: aarch64_generic
+            pretty: mediatek-filogic
+            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
     env:
       TERM: dumb
@@ -31,7 +34,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          path: 'main-repo'
 
       - name: Install system dependencies
         run: |
@@ -44,6 +46,14 @@ jobs:
             libncurses-dev \
             unzip rsync \
             gawk gettext
+
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source $HOME/.cargo/env
+          rustc --version
+          cargo --version
 
       - name: Download OpenWrt SDK
         run: |
@@ -78,11 +88,12 @@ jobs:
           echo "Updating feeds..."
           ./scripts/feeds update -a
           
-          echo "Installing ONLY required dependencies..."
-          ./scripts/feeds install rust
+          echo "Installing package dependencies..."
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
+          
+          echo "Package dependencies installed"
 
       - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
@@ -92,39 +103,13 @@ jobs:
           export KCONFIG_NONINTERACTIVE=1
           
           echo "Setting up local feed..."
-          echo "src-link local $GITHUB_WORKSPACE/main-repo/package" >> feeds.conf.default
+          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
           ./scripts/feeds update local
-          ./scripts/feeds install -p local spotifyd-ng
+          ./scripts/feeds install -a -p local
+          
+          echo "Local feed setup completed"
 
-      - name: Fix Rust LLVM download issue
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          echo "=== FIXING RUST LLVM DOWNLOAD ISSUE ==="
-          
-          # Tambahkan config untuk disable download-ci-llvm
-          for config_file in $(find feeds/packages/lang/rust -name "config.toml" 2>/dev/null || true); do
-            echo "Fixing $config_file"
-            if grep -q "download-ci-llvm" "$config_file"; then
-              sed -i 's/^download-ci-llvm = .*/download-ci-llvm = false/' "$config_file"
-            else
-              echo '[llvm]' >> "$config_file"
-              echo 'download-ci-llvm = false' >> "$config_file"
-            fi
-            echo "✅ Fixed $config_file"
-          done
-          
-          # Jika tidak ada config file, buat yang baru
-          if [ ! -f "feeds/packages/lang/rust/config.toml" ]; then
-            mkdir -p feeds/packages/lang/rust
-            echo '[llvm]' > feeds/packages/lang/rust/config.toml
-            echo 'download-ci-llvm = false' >> feeds/packages/lang/rust/config.toml
-            echo "✅ Created new config.toml"
-          fi
-          
-          echo "✅ LLVM download fix applied"
-
-      - name: Configure SDK
+      - name: Configure SDK dengan force enable
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
@@ -132,50 +117,92 @@ jobs:
           export KCONFIG_NONINTERACTIVE=1
           
           echo "=== CONFIGURATION ==="
+          echo "Step 1: Initial defconfig"
           make defconfig
           
-          echo "CONFIG_PACKAGE_rust=y" >> .config
-          echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
-          echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
-          echo "CONFIG_PACKAGE_libpthread=y" >> .config
+          echo "Step 2: Force enable required packages"
+          # Hanya enable packages yang valid
+          VALID_PACKAGES="alsa-lib libstdcpp libpthread"
+          
+          for pkg in $VALID_PACKAGES; do
+            sed -i '/CONFIG_PACKAGE_'"$pkg"'/d' .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+            echo "Enabled $pkg"
+          done
+          
+          # Enable spotifyd-ng package
           echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
           
+          echo "Step 3: Finalize configuration"
           make defconfig
           
+          echo "Step 4: Verify configuration"
           echo "=== CONFIG STATUS ==="
-          for pkg in rust alsa-lib libstdcpp libpthread spotifyd-ng; do
+          for pkg in $VALID_PACKAGES spotifyd-ng; do
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
               echo "✅ $pkg: ENABLED"
             else
               echo "❌ $pkg: MISSING"
+              echo "Current value: $(grep CONFIG_PACKAGE_${pkg} .config 2>/dev/null || echo 'NOT FOUND')"
               exit 1
             fi
           done
+          
+          echo "✅ All packages configured successfully"
 
-      - name: Build spotifyd-ng package
+      - name: Setup Rust environment variables
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          echo "Setting up Rust environment..."
+          export CARGO_HOME="$HOME/.cargo"
+          export RUSTUP_HOME="$HOME/.rustup"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          
+          # Set environment untuk build system
+          echo "CARGO_HOME=$CARGO_HOME" >> $GITHUB_ENV
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> $GITHUB_ENV
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          
+          rustc --version
+          cargo --version
+
+      - name: Build spotifyd-ng package dengan prebuilt Rust
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "=== BUILDING SPOTIFYD-NG ==="
-          echo "This may take a while (Rust needs to compile first)..."
+          echo "=== BUILDING SPOTIFYD-NG WITH PREBUILT RUST ==="
+          echo "Using prebuilt Rust toolchain:"
+          which rustc
+          rustc --version
           
-          # Build dengan timeout yang lebih panjang
-          timeout 1800 make package/feeds/local/spotifyd-ng/compile V=s || \
-          if [ $? -eq 124 ]; then 
-            echo "Build timed out after 30 minutes, but may still be successful"; 
-          else 
-            exit $?; 
-          fi
+          # Export variables untuk cargo build
+          export CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
+          export CC_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
+          export CXX_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-g++"
+          export AR_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
+          export STRIP_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-strip"
+          
+          echo "Starting build process..."
+          make package/feeds/local/spotifyd-ng/compile V=s
 
       - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
+          echo "=== COLLECTING ARTIFACTS ==="
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
-          find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          
+          find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          
+          if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
+            echo "Searching in other directories..."
+            find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          fi
+          
+          echo "Artifacts collected:"
           ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || echo "No artifacts found"
 
       - name: Upload artifacts
@@ -190,7 +217,26 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           echo "=== DEBUG INFO ==="
-          echo "Rust config files:"
-          find . -name "*config.toml" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
-          echo "Build logs:"
-          find . -name "*.log" -exec echo "=== {} ===" \; -exec tail -20 {} \; 2>/dev/null | head -100
+          echo "Current directory: $(pwd)"
+          
+          echo "=== CONFIG STATUS ==="
+          if [ -f .config ]; then
+            echo "alsa-lib config: $(grep 'CONFIG_PACKAGE_alsa-lib' .config || echo 'NOT FOUND')"
+            echo "libstdcpp config: $(grep 'CONFIG_PACKAGE_libstdcpp' .config || echo 'NOT FOUND')"
+            echo "libpthread config: $(grep 'CONFIG_PACKAGE_libpthread' .config || echo 'NOT FOUND')"
+            echo "spotifyd-ng config: $(grep 'CONFIG_PACKAGE_spotifyd-ng' .config || echo 'NOT FOUND')"
+          else
+            echo "No .config file found"
+          fi
+          
+          echo "=== RUST ENVIRONMENT ==="
+          which rustc || echo "rustc not found"
+          rustc --version || echo "rustc version check failed"
+          echo "CARGO_HOME: $CARGO_HOME"
+          echo "RUSTUP_HOME: $RUSTUP_HOME"
+          
+          echo "=== FEEDS STATUS ==="
+          ls -la feeds/ 2>/dev/null || echo "No feeds directory"
+          
+          echo "=== BUILD LOGS ==="
+          find . -name "*.log" -exec tail -5 {} \; 2>/dev/null | head -20 || echo "No build logs found"
