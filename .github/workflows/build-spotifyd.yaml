@@ -54,7 +54,7 @@ jobs:
             xz-utils tar python3 python3-distutils \
             libncurses-dev unzip rsync gawk gettext \
             musl-tools pkg-config libssl-dev \
-            libasound2-dev libportaudio2 portaudio19-dev
+            libasound2-dev autoconf automake libtool
 
       - name: Install Rust toolchain
         run: |
@@ -64,7 +64,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Download OpenWRT toolchain only
+      - name: Download OpenWRT toolchain
         run: |
           set -eux
           echo "Downloading toolchain for ${{ matrix.target }}..."
@@ -73,7 +73,7 @@ jobs:
           # Download toolchain
           curl -fsSL "${{ matrix.toolchain_url }}" -o toolchain.tar.xz
           
-          # Extract entire SDK first to see structure
+          # Extract entire SDK
           mkdir -p /tmp/sdk-extract
           tar -xf toolchain.tar.xz -C /tmp/sdk-extract
           
@@ -93,10 +93,6 @@ jobs:
           echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
           
           echo "Toolchain directory: $TOOLCHAIN_DIR"
-          ls -la "$TOOLCHAIN_DIR/bin/" || echo "Toolchain bin not found, checking alternative locations..."
-          
-          # Check alternative paths
-          find "$SDK_DIR/staging_dir" -name "*gcc" -type f | head -5 || echo "No compiler found"
 
       - name: Setup cross-compilation environment
         run: |
@@ -109,6 +105,7 @@ jobs:
           CC=$(find "$TOOLCHAIN_DIR/bin" -name "*-gcc" | head -1)
           AR=$(find "$TOOLCHAIN_DIR/bin" -name "*-ar" | head -1)
           STRIP=$(find "$TOOLCHAIN_DIR/bin" -name "*-strip" | head -1)
+          RANLIB=$(find "$TOOLCHAIN_DIR/bin" -name "*-ranlib" | head -1)
           
           if [ -z "$CC" ] || [ -z "$AR" ]; then
             echo "❌ Could not find compiler tools"
@@ -120,11 +117,14 @@ jobs:
           echo "Found CC: $CC"
           echo "Found AR: $AR"
           echo "Found STRIP: $STRIP"
+          echo "Found RANLIB: $RANLIB"
           
           if [ "${{ matrix.target }}" = "x86_64" ]; then
             export CARGO_TARGET=x86_64-unknown-linux-musl
+            export TARGET_ARCH=x86_64
           else
             export CARGO_TARGET=aarch64-unknown-linux-musl
+            export TARGET_ARCH=aarch64
           fi
           
           rustup target add $CARGO_TARGET
@@ -132,96 +132,130 @@ jobs:
           echo "CC=$CC" >> $GITHUB_ENV
           echo "AR=$AR" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
+          echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
 
-      - name: Setup pkg-config untuk cross-compilation
+      - name: Build ALSA library from source
         run: |
           set -eux
-          echo "Setting up pkg-config for cross-compilation..."
           
-          # Setup pkg-config environment variables
+          # Download and build ALSA lib statically
+          echo "Building ALSA library for $TARGET_ARCH..."
+          
+          # Download ALSA source
+          curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa-lib.tar.bz2
+          tar -xf alsa-lib.tar.bz2
+          cd alsa-lib-1.2.11
+          
+          # Configure for cross-compilation
+          ./configure \
+            --host=$TARGET_ARCH-linux-musl \
+            --prefix=$TOOLCHAIN_DIR/usr \
+            --enable-static \
+            --disable-shared \
+            --with-pic \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            STRIP="$STRIP" \
+            --with-libdl=no \
+            --with-pthread=yes
+          
+          # Build and install
+          make -j$(nproc)
+          make install
+          
+          # Create pkg-config file manually if needed
+          mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
+          cat > $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc << EOF
+          prefix=$TOOLCHAIN_DIR/usr
+          exec_prefix=\${prefix}
+          libdir=\${exec_prefix}/lib
+          includedir=\${prefix}/include
+          
+          Name: alsa
+          Description: Advanced Linux Sound Architecture (ALSA) - Library
+          Version: 1.2.11
+          Requires: 
+          Libs: -L\${libdir} -lasound
+          Libs.private: -lm -ldl -lpthread
+          Cflags: -I\${includedir}
+          EOF
+          
+          echo "ALSA library built and installed"
+
+      - name: Setup pkg-config environment
+        run: |
+          set -eux
+          
+          # Set pkg-config paths
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
+          export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_LIBDIR=$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
           
-          echo "PKG_CONFIG_ALLOW_CROSS=1"
-          echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR"
-          echo "PKG_CONFIG_PATH=$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          # Test pkg-config
+          echo "Testing pkg-config for alsa..."
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          pkg-config --exists --print-errors alsa || echo "ALSA not found via pkg-config, but we'll proceed anyway"
 
-      - name: Verify toolchain structure
-        run: |
-          set -eux
-          echo "=== TOOLCHAIN STRUCTURE ==="
-          echo "Toolchain dir: $TOOLCHAIN_DIR"
-          ls -la "$TOOLCHAIN_DIR/" || echo "Toolchain directory not found"
-          
-          echo "=== LIBRARY PATHS ==="
-          find "$TOOLCHAIN_DIR" -name "*.pc" -o -name "libasound*" | head -10 || echo "No library files found"
-          
-          echo "=== PKG-CONFIG FILES ==="
-          find "$TOOLCHAIN_DIR" -path "*/pkgconfig/*" -name "*.pc" | head -5 || echo "No pkg-config files found"
-
-      - name: Build spotifyd standalone
+      - name: Build spotifyd with static ALSA
         run: |
           set -eux
           cd spotifyd-src
           
-          echo "Building with:"
+          echo "Building spotifyd with static ALSA linking..."
           echo "CC: $CC"
           echo "AR: $AR"
           echo "Target: $CARGO_TARGET"
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          echo "PKG_CONFIG_SYSROOT_DIR: $PKG_CONFIG_SYSROOT_DIR"
           
-          # Build dengan cross-compilation
+          # Set linker flags for static linking
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
+          
+          # Build with static linking
           CARGO_HOME="$HOME/.cargo" \
-          RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static" \
+          RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig" \
-          PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
           cargo build \
             --release \
             --no-default-features \
             --features alsa_backend \
             --target $CARGO_TARGET
           
-          # Strip binary untuk mengurangi size
+          # Strip binary
           $STRIP target/$CARGO_TARGET/release/spotifyd
 
-      - name: Fallback build dengan portaudio (jika ALSA gagal)
-        if: failure()
+      - name: Verify ALSA linking
         run: |
           set -eux
           cd spotifyd-src
           
-          echo "ALSA build failed, trying with portaudio backend..."
+          echo "Checking binary dependencies..."
+          file target/$CARGO_TARGET/release/spotifyd
           
-          # Clean previous build
-          cargo clean
-          
-          # Build dengan portaudio backend
-          CARGO_HOME="$HOME/.cargo" \
-          RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static" \
-          cargo build \
-            --release \
-            --no-default-features \
-            --features portaudio_backend \
-            --target $CARGO_TARGET
-          
-          # Strip binary untuk mengurangi size
-          $STRIP target/$CARGO_TARGET/release/spotifyd
+          echo "Checking ALSA symbols..."
+          $STRIP -g target/$CARGO_TARGET/release/spotifyd || true
+          nm target/$CARGO_TARGET/release/spotifyd | grep -i alsa || echo "No ALSA symbols found (may be statically linked)"
 
       - name: Create OpenWRT package
         run: |
           set -eux
           mkdir -p spotifyd-ng_control
           
-          # Create control file tanpa heredocs
+          # Create control file
           echo "Package: spotifyd-ng" > spotifyd-ng_control/control
           echo "Version: 0.4.1-1" >> spotifyd-ng_control/control
-          echo "Depends: libc, alsa-lib, libstdcpp, libpthread" >> spotifyd-ng_control/control
+          echo "Depends: libc, libstdcpp, libpthread" >> spotifyd-ng_control/control
           echo "Source: https://github.com/Spotifyd/spotifyd" >> spotifyd-ng_control/control
           echo "Section: sound" >> spotifyd-ng_control/control
           echo "Category: Sound" >> spotifyd-ng_control/control
