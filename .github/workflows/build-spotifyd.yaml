@@ -1,11 +1,10 @@
-name: build-spotifyd-simple
+name: build-spotifyd-docker
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
     paths:
-      - 'package/**'
       - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
@@ -17,69 +16,31 @@ jobs:
         include:
           - target: x86_64
             rust_target: x86_64-unknown-linux-musl
-            cross_toolchain: gcc-x86-64-linux-gnu
-            musl_tool: x86_64-linux-musl-gcc
+            arch: x86_64
           - target: aarch64
             rust_target: aarch64-unknown-linux-musl
-            cross_toolchain: gcc-aarch64-linux-gnu
-            musl_tool: aarch64-linux-gnu-gcc
+            arch: aarch64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            git curl ca-certificates xz-utils \
-            python3 pkg-config unzip \
-            ${{ matrix.cross_toolchain }} \
-            musl-tools
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Install Rust
+      - name: Build with cross Docker
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          rustup target add ${{ matrix.rust_target }}
-
-      - name: Setup cargo config
-        run: |
-          mkdir -p $HOME/.cargo
-          if [ "${{ matrix.target }}" = "x86_64" ]; then
-            cat > $HOME/.cargo/config.toml << 'EOF'
-[target.x86_64-unknown-linux-musl]
-linker = "x86_64-linux-musl-gcc"
-EOF
-          else
-            cat > $HOME/.cargo/config.toml << 'EOF'
-[target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-gnu-gcc"
-EOF
-          fi
-
-      - name: Build spotifyd
-        run: |
-          set -eux
+          # Build menggunakan cross (Docker-based cross compilation)
+          cargo install cross --git https://github.com/cross-rs/cross
+          
           git clone https://github.com/Spotifyd/spotifyd.git spotifyd-source
           cd spotifyd-source
           git checkout v0.4.1
           
-          # Apply patch untuk librespot
           echo '[patch.crates-io]' >> Cargo.toml
           echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
           
-          # Set environment variables untuk cross-compilation
-          if [ "${{ matrix.target }}" = "aarch64" ]; then
-            export CC_aarch64_unknown_linux_musl="aarch64-linux-gnu-gcc"
-            export AR_aarch64_unknown_linux_musl="aarch64-linux-gnu-ar"
-          else
-            export CC_x86_64_unknown_linux_musl="x86_64-linux-musl-gcc"
-            export AR_x86_64_unknown_linux_musl="x86_64-linux-musl-ar"
-          fi
-          
-          cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
+          cross build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
           
           mkdir -p "$GITHUB_WORKSPACE/binaries"
           cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
@@ -92,15 +53,12 @@ EOF
           cp "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}" ipk/usr/bin/spotifyd
           chmod +x ipk/usr/bin/spotifyd
           
-          # Buat control file tanpa heredoc
+          # Buat control file sederhana
           echo "Package: spotifyd-ng" > ipk/CONTROL/control
           echo "Version: 0.4.1-1" >> ipk/CONTROL/control
           echo "Depends: libstdcpp, libpthread, alsa-lib" >> ipk/CONTROL/control
-          echo "Source: https://github.com/Spotifyd/spotifyd" >> ipk/CONTROL/control
-          echo "Section: sound" >> ipk/CONTROL/control
-          echo "Category: Sound" >> ipk/CONTROL/control
           echo "Architecture: ${{ matrix.target }}" >> ipk/CONTROL/control
-          echo "Description: Spotify daemon for OpenWrt" >> ipk/CONTROL/control
+          echo "Description: Spotify daemon" >> ipk/CONTROL/control
           
           cd ipk
           tar -czf ../data.tar.gz ./
@@ -116,4 +74,3 @@ EOF
         with:
           name: spotifyd-${{ matrix.target }}-ipk
           path: out/
-          if-no-files-found: error
