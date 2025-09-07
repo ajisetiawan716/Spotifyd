@@ -14,8 +14,8 @@ PKG_MIRROR_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
 
-# Tetap gunakan cargo.mk tapi dengan custom setup
-include $(INCLUDE_DIR)/cargo.mk
+# HAPUS include cargo.mk karena file tidak ada dan kita gunakan system cargo
+# include $(INCLUDE_DIR)/cargo.mk
 
 define Package/spotifyd-ng
   SECTION:=sound
@@ -37,14 +37,15 @@ define Build/Configure
 endef
 
 define Build/Compile
-	# Export environment variables untuk system Rust
-	export CARGO_HOME="$(CARGO_HOME)" && \
-	export PATH="$(CARGO_HOME)/bin:$(PATH)" && \
-	$(call Build/Compile/Cargo,--
-		no-default-features \
+	# Gunakan system cargo langsung
+	cd $(PKG_BUILD_DIR) && \
+	CARGO_HOME="$(CARGO_HOME)" \
+	CARGO_TARGET_DIR="$(PKG_BUILD_DIR)/target" \
+	cargo build \
+		--release \
+		--no-default-features \
 		--features alsa_backend \
-		release
-	)
+		--target-dir="$(PKG_BUILD_DIR)/target"
 endef
 
 define Package/spotifyd-ng/install
