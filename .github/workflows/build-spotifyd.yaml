@@ -1,54 +1,57 @@
-name: build-spotifyd-openwrt
+name: build-spotifyd-openwrt-standalone
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
     paths:
-      - 'package/**'
+      - 'src/**'
       - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64
-            pretty: x86-64
-            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            cache_key: sdk-x86_64-23.05.5
-          - target: aarch64_generic
-            pretty: mediatek-filogic
-            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            cache_key: sdk-aarch64-23.05.5
-
-    env:
-      TERM: dumb
-      DEBIAN_FRONTEND: noninteractive
-      KCONFIG_NONINTERACTIVE: 1
-      FORCE_UNSAFE_CONFIGURE: 1
+            arch: x86_64
+            toolchain: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86_64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - target: aarch64
+            arch: aarch64
+            toolchain: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
     steps:
-      - name: Checkout repository
+      - name: Checkout spotifyd source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          repository: Spotifyd/spotifyd
+          ref: v0.4.1
+          path: spotifyd-src
+
+      - name: Apply librespot patch
+        run: |
+          set -eux
+          cd spotifyd-src
+          
+          # Apply librespot patch
+          sed -i '/^\[patch.crates-io\]/,/^$/d' Cargo.toml
+          echo '[patch.crates-io]' >> Cargo.toml
+          echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
+          
+          echo "✅ Librespot patch applied"
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            git curl wget \
-            xz-utils tar \
-            python3 python3-distutils \
-            libncurses-dev \
-            unzip rsync \
-            gawk gettext \
-            musl-tools
+            build-essential git curl wget \
+            xz-utils tar python3 python3-distutils \
+            libncurses-dev unzip rsync gawk gettext \
+            musl-tools pkg-config libssl-dev
 
       - name: Install Rust toolchain
         run: |
@@ -58,332 +61,106 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Cache OpenWRT SDK
-        uses: actions/cache@v3
-        id: sdk-cache
-        with:
-          path: openwrt-sdk-*
-          key: ${{ matrix.cache_key }}-${{ hashFiles('package/sound/spotifyd-ng/Makefile') }}
-          restore-keys: |
-            ${{ matrix.cache_key }}-
-
-      - name: Download OpenWrt SDK (if not cached)
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
+      - name: Download OpenWRT toolchain only
         run: |
           set -eux
-          echo "Downloading SDK for ${{ matrix.target }}..."
-          curl -fsSL "${{ matrix.sdk }}" -o sdk.tar.xz
-          tar -xf sdk.tar.xz
-          SDK_DIR=$(echo openwrt-sdk-*)
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-          echo "STAGING_DIR=$GITHUB_WORKSPACE/$SDK_DIR/staging_dir" >> $GITHUB_ENV
-          echo "SDK downloaded and extracted: $SDK_DIR"
-
-      - name: Set SDK environment (if cached)
-        if: steps.sdk-cache.outputs.cache-hit == 'true'
-        run: |
-          set -eux
-          SDK_DIR=$(echo openwrt-sdk-*)
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-          echo "STAGING_DIR=$GITHUB_WORKSPACE/$SDK_DIR/staging_dir" >> $GITHUB_ENV
-          echo "✅ Using cached SDK: $SDK_DIR"
-
-      - name: Prepare SDK environment
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          export TERM=dumb
-          export KCONFIG_NONINTERACTIVE=1
+          echo "Downloading toolchain for ${{ matrix.target }}..."
+          curl -fsSL "${{ matrix.toolchain }}" -o toolchain.tar.xz
+          mkdir -p /opt/openwrt-toolchain
+          tar -xf toolchain.tar.xz --strip-components=1 -C /opt/openwrt-toolchain \
+            --wildcards '*/staging_dir/toolchain-*'
           
-          echo "Creating prerequisite directories..."
-          mkdir -p host/.prereq-build
-          touch host/.prereq-build
-          echo "Prerequisite setup completed"
-
-      - name: Check alsa-lib availability
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          echo "=== CHECKING ALSA-LIB AVAILABILITY ==="
-          
-          if [ -f "$STAGING_DIR/usr/lib/libasound.so" ] || [ -f "$STAGING_DIR/usr/lib/libasound.a" ]; then
-            echo "✅ alsa-lib already available in SDK"
-            echo "ALSA_PREBUILT=true" >> $GITHUB_ENV
-          else
-            echo "⚠️ alsa-lib not found, will need to build"
-            echo "ALSA_PREBUILT=false" >> $GITHUB_ENV
-          fi
-          
-          # List available alsa files
-          find "$STAGING_DIR" -name "*asound*" 2>/dev/null | head -5 || echo "No alsa files found"
-
-      - name: Setup package feeds
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          export TERM=dumb
-          export KCONFIG_NONINTERACTIVE=1
-          
-          echo "Updating feeds..."
-          ./scripts/feeds update -a
-          
-          echo "Installing package dependencies..."
-          ./scripts/feeds install alsa-lib
-          ./scripts/feeds install libstdcpp
-          ./scripts/feeds install libpthread
-          
-          echo "Package dependencies installed"
-
-      - name: Build alsa-lib only if missing
-        if: env.ALSA_PREBUILT == 'false'
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          export TERM=dumb
-          export KCONFIG_NONINTERACTIVE=1
-          
-          echo "=== BUILDING ALSA-LIB (may take 30+ minutes) ==="
-          echo "This is only needed once, subsequent builds will use cache"
-          
-          # Build dengan timeout 45 menit
-          timeout 2700 make package/feeds/packages/alsa-lib/compile V=s || \
-          if [ $? -eq 124 ]; then
-            echo "⚠️ Build timed out after 45 minutes, checking if successful..."
-            if [ -f "$STAGING_DIR/usr/lib/libasound.so" ]; then
-              echo "✅ Build completed despite timeout"
-            else
-              echo "❌ Build failed due to timeout"
-              exit 1
-            fi
-          fi
-
-      - name: Remove rust package from feeds to prevent conflict
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          echo "=== REMOVING RUST PACKAGE FROM FEEDS ==="
-          
-          # Uninstall rust package dari feeds untuk menghindari conflict
-          ./scripts/feeds uninstall rust 2>/dev/null || true
-          ./scripts/feeds uninstall rust-stdlib 2>/dev/null || true
-          ./scripts/feeds uninstall rust-dev 2>/dev/null || true
-          
-          echo "✅ Rust packages removed from feeds"
-
-      - name: Setup local feed
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          export TERM=dumb
-          export KCONFIG_NONINTERACTIVE=1
-          
-          echo "Setting up local feed..."
-          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
-          ./scripts/feeds update local
-          ./scripts/feeds install -a -p local
-          
-          echo "Local feed setup completed"
-
-      - name: Configure SDK dengan force enable
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          export TERM=dumb
-          export KCONFIG_NONINTERACTIVE=1
-          
-          echo "=== CONFIGURATION ==="
-          echo "Step 1: Initial defconfig"
-          make defconfig
-          
-          echo "Step 2: Force enable required packages"
-          # Hanya enable packages yang valid
-          VALID_PACKAGES="alsa-lib libstdcpp libpthread"
-          
-          for pkg in $VALID_PACKAGES; do
-            sed -i '/CONFIG_PACKAGE_'"$pkg"'/d' .config 2>/dev/null || true
-            echo "CONFIG_PACKAGE_${pkg}=y" >> .config
-            echo "Enabled $pkg"
-          done
-          
-          # Enable spotifyd-ng package
-          echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
-          
-          # Force disable rust untuk menghindari build dari feeds
-          sed -i '/CONFIG_PACKAGE_rust/d' .config 2>/dev/null || true
-          echo "# CONFIG_PACKAGE_rust is not set" >> .config
-          
-          echo "Step 3: Finalize configuration"
-          make defconfig
-          
-          echo "Step 4: Verify configuration"
-          echo "=== CONFIG STATUS ==="
-          for pkg in $VALID_PACKAGES spotifyd-ng; do
-            if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-              echo "✅ $pkg: ENABLED"
-            else
-              echo "❌ $pkg: MISSING"
-              echo "Current value: $(grep CONFIG_PACKAGE_${pkg} .config 2>/dev/null || echo 'NOT FOUND')"
-              exit 1
-            fi
-          done
-          
-          # Pastikan rust disabled
-          if grep -q "CONFIG_PACKAGE_rust=y" .config; then
-            echo "❌ rust: SHOULD BE DISABLED BUT IS ENABLED"
-            echo "Current value: $(grep CONFIG_PACKAGE_rust .config)"
-            exit 1
-          else
-            echo "✅ rust: DISABLED (correct)"
-            echo "Current value: $(grep CONFIG_PACKAGE_rust .config 2>/dev/null || echo 'NOT SET')"
-          fi
-          
-          echo "✅ All packages configured successfully"
-
-      - name: Setup Rust environment variables
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          echo "Setting up Rust environment..."
-          export CARGO_HOME="$HOME/.cargo"
-          export RUSTUP_HOME="$HOME/.rustup"
-          export PATH="$CARGO_HOME/bin:$PATH"
-          
-          # Set environment untuk build system
-          echo "CARGO_HOME=$CARGO_HOME" >> $GITHUB_ENV
-          echo "RUSTUP_HOME=$RUSTUP_HOME" >> $GITHUB_ENV
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          
-          rustc --version
-          cargo --version
+          export TOOLCHAIN_DIR="/opt/openwrt-toolchain"
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
 
       - name: Setup cross-compilation environment
-        working-directory: ${{ env.SDK_DIR }}
         run: |
-          echo "Setting up cross-compilation environment..."
+          set -eux
           
           if [ "${{ matrix.target }}" = "x86_64" ]; then
-            export REAL_GNU_TARGET_NAME=x86_64-openwrt-linux
-            export CC="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
-            export AR="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
+            export CC="$TOOLCHAIN_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
+            export AR="$TOOLCHAIN_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
+            export STRIP="$TOOLCHAIN_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-strip"
             export CARGO_TARGET=x86_64-unknown-linux-musl
-          elif [ "${{ matrix.target }}" = "aarch64_generic" ]; then
-            export REAL_GNU_TARGET_NAME=aarch64-openwrt-linux
-            export CC="$STAGING_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-gcc"
-            export AR="$STAGING_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-ar"
+          else
+            export CC="$TOOLCHAIN_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-gcc"
+            export AR="$TOOLCHAIN_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-ar"
+            export STRIP="$TOOLCHAIN_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-strip"
             export CARGO_TARGET=aarch64-unknown-linux-musl
           fi
           
-          # Install Rust target yang sesuai
           rustup target add $CARGO_TARGET
           
-          # Set environment variables untuk Makefile
           echo "CC=$CC" >> $GITHUB_ENV
           echo "AR=$AR" >> $GITHUB_ENV
-          echo "REAL_GNU_TARGET_NAME=$REAL_GNU_TARGET_NAME" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
           echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
-          echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
-          
-          echo "Target: $REAL_GNU_TARGET_NAME"
-          echo "Rust Target: $CARGO_TARGET"
-          echo "CC: $CC"
-          echo "AR: $AR"
-          echo "STAGING_DIR: $STAGING_DIR"
 
-      - name: Build spotifyd-ng package dengan system cargo
-        working-directory: ${{ env.SDK_DIR }}
+      - name: Build spotifyd standalone
         run: |
           set -eux
-          export TERM=dumb
-          export KCONFIG_NONINTERACTIVE=1
+          cd spotifyd-src
           
-          echo "=== BUILDING SPOTIFYD-NG WITH SYSTEM CARGO ==="
-          echo "Using system Rust toolchain:"
-          which rustc
-          rustc --version
+          # Build dengan cross-compilation
+          CARGO_HOME="$HOME/.cargo" \
+          RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static" \
+          cargo build \
+            --release \
+            --no-default-features \
+            --features alsa_backend \
+            --target $CARGO_TARGET
           
-          echo "Cross-compilation environment:"
-          echo "CC: $CC"
-          echo "AR: $AR"
-          echo "CARGO_TARGET: $CARGO_TARGET"
-          echo "STAGING_DIR: $STAGING_DIR"
-          
-          echo "Starting build process..."
-          make package/feeds/local/spotifyd-ng/compile V=s
+          # Strip binary untuk mengurangi size
+          $STRIP target/$CARGO_TARGET/release/spotifyd
 
-      - name: Check binary dependencies
-        working-directory: ${{ env.SDK_DIR }}
+      - name: Create OpenWRT package
         run: |
           set -eux
-          echo "=== CHECKING BINARY DEPENDENCIES ==="
+          mkdir -p spotifyd-ng_control
           
-          # Cari binary yang telah dibuild
-          BINARY_PATH=$(find build_dir -name "spotifyd" -type f -executable | head -1)
-          if [ -n "$BINARY_PATH" ] && [ -f "$BINARY_PATH" ]; then
-            echo "Found binary: $BINARY_PATH"
-            echo "File info:"
-            file "$BINARY_PATH"
-            echo "LDD output:"
-            ldd "$BINARY_PATH" 2>/dev/null || echo "ldd not available or binary is static"
-          else
-            echo "Binary not found, checking in target directory..."
-            find build_dir -name "spotifyd" -type f
-          fi
-
-      - name: Collect artifacts
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          echo "=== COLLECTING ARTIFACTS ==="
-          mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
+          # Create control file tanpa heredocs
+          echo "Package: spotifyd-ng" > spotifyd-ng_control/control
+          echo "Version: 0.4.1-1" >> spotifyd-ng_control/control
+          echo "Depends: libc, alsa-lib, libstdcpp, libpthread" >> spotifyd-ng_control/control
+          echo "Source: https://github.com/Spotifyd/spotifyd" >> spotifyd-ng_control/control
+          echo "Section: sound" >> spotifyd-ng_control/control
+          echo "Category: Sound" >> spotifyd-ng_control/control
+          echo "Title: Spotify daemon" >> spotifyd-ng_control/control
+          echo "Maintainer: Build Bot <noreply@github.com>" >> spotifyd-ng_control/control
+          echo "Architecture: ${{ matrix.arch }}" >> spotifyd-ng_control/control
+          echo "Description: A spotify playing daemon for OpenWrt." >> spotifyd-ng_control/control
           
-          find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          # Create package structure
+          mkdir -p spotifyd-ng_{data,ipk}
+          mkdir -p spotifyd-ng_data/usr/bin
           
-          if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
-            echo "Searching in other directories..."
-            find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          fi
+          # Copy binary
+          cp spotifyd-src/target/$CARGO_TARGET/release/spotifyd spotifyd-ng_data/usr/bin/
+          chmod +x spotifyd-ng_data/usr/bin/spotifyd
           
-          echo "Artifacts collected:"
-          ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || echo "No artifacts found"
+          # Create IPK package
+          cd spotifyd-ng_data && tar -czf ../data.tar.gz . && cd ..
+          cd spotifyd-ng_control && tar -czf ../control.tar.gz . && cd ..
+          echo "2.0" > debian-binary
+          
+          # Create final IPK
+          tar -czf spotifyd-ng_${{ matrix.arch }}.ipk ./debian-binary ./data.tar.gz ./control.tar.gz
+          
+          # Create output directory
+          mkdir -p output/${{ matrix.target }}
+          mv spotifyd-ng_${{ matrix.arch }}.ipk output/${{ matrix.target }}/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: spotifyd-${{ matrix.target }}-ipk
-          path: out/${{ matrix.target }}/
-          if-no-files-found: warn
+          path: output/${{ matrix.target }}/
+          if-no-files-found: error
 
-      - name: Debug info if failed
-        if: failure()
-        working-directory: ${{ env.SDK_DIR }}
+      - name: Verify package
         run: |
-          echo "=== DEBUG INFO ==="
-          echo "Current directory: $(pwd)"
-          
-          echo "=== CONFIG STATUS ==="
-          if [ -f .config ]; then
-            echo "alsa-lib config: $(grep 'CONFIG_PACKAGE_alsa-lib' .config || echo 'NOT FOUND')"
-            echo "libstdcpp config: $(grep 'CONFIG_PACKAGE_libstdcpp' .config || echo 'NOT FOUND')"
-            echo "libpthread config: $(grep 'CONFIG_PACKAGE_libpthread' .config || echo 'NOT FOUND')"
-            echo "spotifyd-ng config: $(grep 'CONFIG_PACKAGE_spotifyd-ng' .config || echo 'NOT FOUND')"
-            echo "rust config: $(grep 'CONFIG_PACKAGE_rust' .config || echo 'NOT FOUND')"
-          else
-            echo "No .config file found"
-          fi
-          
-          echo "=== RUST ENVIRONMENT ==="
-          which rustc || echo "rustc not found"
-          rustc --version || echo "rustc version check failed"
-          echo "CARGO_HOME: $CARGO_HOME"
-          echo "RUSTUP_HOME: $RUSTUP_HOME"
-          
-          echo "=== CROSS-COMPILATION ENV ==="
-          echo "CC: $CC"
-          echo "AR: $AR"
-          echo "CARGO_TARGET: $CARGO_TARGET"
-          echo "STAGING_DIR: $STAGING_DIR"
-          
-          echo "=== ALSA LIBRARY CHECK ==="
-          find $(STAGING_DIR) -name "*asound*" -type f | head -10 || echo "No alsa files found"
-          
-          echo "=== BUILD LOGS ==="
-          find . -name "*.log" -exec echo "=== {} ===" \; -exec tail -10 {} \; 2>/dev/null | head -50
+          echo "=== PACKAGE VERIFICATION ==="
+          echo "Binary info:"
+          file spotifyd-src/target/$CARGO_TARGET/release/spotifyd
+          echo "Package contents:"
+          tar -ztvf output/${{ matrix.target }}/*.ipk
