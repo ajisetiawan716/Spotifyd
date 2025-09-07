@@ -1,0 +1,3 @@
+[target.aarch64-unknown-linux-musl]
+linker = "$STAGING_DIR/toolchain/bin/aarch64-openwrt-linux-musl-gcc"
+ar = "$STAGING_DIR/toolchain/bin/aarch64-openwrt-linux-musl-ar"

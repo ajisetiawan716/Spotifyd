@@ -7,34 +7,28 @@ on:
     paths:
       - 'package/**'
       - '.github/workflows/build-spotifyd.yaml'
+      - '.github/cargo-config/*'
 
 jobs:
   build:
-    name: build (${{ matrix.target }} | ${{ matrix.pretty }})
+    name: build (${{ matrix.target }})
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64
-            pretty: x86-64
             rust_target: x86_64-unknown-linux-musl
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-          - target: aarch64_generic
-            pretty: mediatek-filogic
+          - target: aarch64
             rust_target: aarch64-unknown-linux-musl
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-
-    env:
-      TERM: xterm
-      KCONFIG_NONINTERACTIVE: 1
-      MAKEFLAGS: -j$(nproc)
-      FORCE_UNSAFE_CONFIGURE: 1
-      RUSTFLAGS: -C debuginfo=0
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install system dependencies
         run: |
@@ -48,6 +42,7 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustup target add ${{ matrix.rust_target }}
 
       - name: Download & extract SDK
         run: |
@@ -62,11 +57,9 @@ jobs:
           echo "PATH=${{ env.STAGING_DIR }}/toolchain/bin:$PATH" >> $GITHUB_ENV
           if [ "${{ matrix.target }}" = "x86_64" ]; then
             echo "CC=${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-gcc" >> $GITHUB_ENV
-            echo "CXX=${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-g++" >> $GITHUB_ENV
             echo "AR=${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-ar" >> $GITHUB_ENV
           else
             echo "CC=${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-gcc" >> $GITHUB_ENV
-            echo "CXX=${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-g++" >> $GITHUB_ENV
             echo "AR=${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-ar" >> $GITHUB_ENV
           fi
 
@@ -81,54 +74,56 @@ jobs:
           echo '[patch.crates-io]' >> Cargo.toml
           echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
           
-          # Setup cargo config berdasarkan target
+          # Copy config file yang sudah disiapkan
           mkdir -p .cargo
           if [ "${{ matrix.target }}" = "x86_64" ]; then
-            cat > .cargo/config.toml << 'EOF'
-[target.x86_64-unknown-linux-musl]
-linker = "${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-gcc"
-ar = "${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-ar"
-EOF
+            cp "$GITHUB_WORKSPACE/.github/cargo-config/x86_64-config.toml" .cargo/config.toml
           else
-            cat > .cargo/config.toml << 'EOF'
-[target.aarch64-unknown-linux-musl]
-linker = "${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-gcc"
-ar = "${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-ar"
-EOF
+            cp "$GITHUB_WORKSPACE/.github/cargo-config/aarch64-config.toml" .cargo/config.toml
           fi
           
-          # Build dengan cargo menggunakan toolchain OpenWrt
+          # Replace placeholder dengan path actual
+          sed -i "s|\$STAGING_DIR|${{ env.STAGING_DIR }}|g" .cargo/config.toml
+          
+          # Set environment variables
+          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_LINKER="${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-gcc'; else echo 'aarch64-openwrt-linux-musl-gcc'; fi)"
+          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_AR="${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-ar'; else echo 'aarch64-openwrt-linux-musl-ar'; fi)"
+          
           cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
           
-          # Salin binary
           mkdir -p "$GITHUB_WORKSPACE/binaries"
           cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
 
-      - name: Prepare package directory
+      - name: Create IPK package
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/package/spotifyd-ng"
-          cp -r ${{ github.workspace }}/package/* "$GITHUB_WORKSPACE/package/spotifyd-ng/" || true
-
-      - name: Build IPK package using SDK
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          # Setup feeds
-          ./scripts/feeds update packages
-          ./scripts/feeds install -a -p packages
-          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
-          ./scripts/feeds update local
-          ./scripts/feeds install spotifyd-ng
+          set -eux
+          mkdir -p ipk/CONTROL ipk/usr/bin
           
-          # Build package
-          make package/spotifyd-ng/compile V=sc
+          cp "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}" ipk/usr/bin/spotifyd
+          chmod +x ipk/usr/bin/spotifyd
           
-          # Collect artifacts
-          mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
-          find bin/packages -name "*spotifyd-ng*.ipk" -exec cp {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          cat > ipk/CONTROL/control << EOF
+Package: spotifyd-ng
+Version: 0.4.1-1
+Depends: libstdcpp, libpthread, alsa-lib
+Source: https://github.com/Spotifyd/spotifyd
+Section: sound
+Category: Sound
+Architecture: ${{ matrix.target }}
+Description: Spotify daemon for OpenWrt
+EOF
+          
+          cd ipk
+          tar -czf ../data.tar.gz ./
+          cd CONTROL
+          tar -czf ../control.tar.gz ./
+          cd ..
+          echo "2.0" > debian-binary
+          tar -czf "$GITHUB_WORKSPACE/out/spotifyd-ng_0.4.1-1_${{ matrix.target }}.ipk" debian-binary control.tar.gz data.tar.gz
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: spotifyd-${{ matrix.target }}-ipk
-          path: out/${{ matrix.target }}/
+          path: out/
           if-no-files-found: error
