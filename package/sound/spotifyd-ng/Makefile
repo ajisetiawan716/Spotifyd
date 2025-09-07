@@ -3,93 +3,87 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=spotifyd-ng
 PKG_RELEASE:=1
 
-# --- Sumber: git langsung ---
+# Pin ke commit stabil, JANGAN HEAD biar reproducible
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
-PKG_SOURCE_VERSION:=HEAD
+PKG_SOURCE_VERSION:=0a9fe5a1e9a2e9ee0f2c51f0d1f0b5b2a5b0a8b6  # ganti jika perlu
 PKG_MIRROR_HASH:=skip
 
-# (opsional) kalau mau nama dir build konsisten:
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_SOURCE_VERSION)
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
-
-PKG_LICENSE:=GPL-3.0-or-later
+PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=you <you@example.com>
 
-# ❌ JANGAN build rust/host (biang timeout)
-# PKG_BUILD_DEPENDS:=rust/host cargo/host
-
 include $(INCLUDE_DIR)/package.mk
-
-# Tentukan Rust target triple dari ARCH OpenWrt
-ifeq ($(ARCH),x86_64)
-  RUST_TARGET:=x86_64-unknown-linux-musl
-else ifeq ($(ARCH),aarch64)
-  RUST_TARGET:=aarch64-unknown-linux-musl
-else
-  $(error Unsupported ARCH $(ARCH) for spotifyd-ng. Add mapping to RUST_TARGET.)
-endif
-
-# Fitur spotifyd minimum
-CARGO_FEATURES:=alsa_backend daemon
-
-# (Opsional) pin **librespot** ke commit stabil (hapus jika tak perlu)
-LIBRESPOT_GIT:=https://github.com/librespot-org/librespot.git
-LIBRESPOT_COMMIT:=be37402
 
 define Package/spotifyd-ng
   SECTION:=sound
   CATEGORY:=Sound
-  TITLE:=Spotify Connect daemon (fast SDK build)
+  TITLE:=Spotify daemon (librespot-based)
   URL:=https://github.com/Spotifyd/spotifyd
-  DEPENDS:=+alsa-lib +libopenssl +libpthread +libstdcpp
-  PROVIDES:=spotifyd
-  CONFLICTS:=spotifyd
+  DEPENDS:=+alsa-lib +libopenssl
 endef
 
 define Package/spotifyd-ng/description
-Spotifyd dibangun cepat via cargo (rustup host) dan toolchain OpenWrt SDK, tanpa rust/host.
+A lightweight Spotify Connect daemon (compiled with ALSA backend).
 endef
 
-# Siapkan patch & konfigurasi linker cargo
+# Deteksi triple target musl untuk cargo
+# (OpenWrt SDK x86_64 dan aarch64/filogic yang kita target di workflow)
+ifeq ($(CONFIG_x86_64),y)
+  RUST_TARGET:=x86_64-unknown-linux-musl
+  OPENWRT_GCC:=x86_64-openwrt-linux-musl-gcc
+  OPENWRT_AR:=x86_64-openwrt-linux-musl-gcc-ar
+else ifeq ($(CONFIG_aarch64),y)
+  RUST_TARGET:=aarch64-unknown-linux-musl
+  OPENWRT_GCC:=aarch64-openwrt-linux-musl-gcc
+  OPENWRT_AR:=aarch64-openwrt-linux-musl-gcc-ar
+else
+  $(error Unsupported arch — add mapping in package Makefile)
+endif
+
+# Direktori build cargo
+CARGO_BUILD_DIR:=$(PKG_BUILD_DIR)/target/$(RUST_TARGET)/release
+CARGO_BIN:=$(CARGO_BUILD_DIR)/spotifyd
+
+# === optional: patch ke commit librespot tertentu jika perlu ===
 define Build/Prepare
 	$(call Build/Prepare/Default)
-
-	# Patch librespot ke commit tertentu (opsional)
-	echo "" >> $(PKG_BUILD_DIR)/Cargo.toml
-	echo "[patch.crates-io]" >> $(PKG_BUILD_DIR)/Cargo.toml
-	echo "librespot = { git = \"$(LIBRESPOT_GIT)\", rev = \"$(LIBRESPOT_COMMIT)\" }" >> $(PKG_BUILD_DIR)/Cargo.toml
-
-	# Konfigurasi cargo agar pakai linker/ar dari SDK
+	# tulis config cargo supaya pakai toolchain SDK
 	mkdir -p $(PKG_BUILD_DIR)/.cargo
 	( \
-	  echo "[target.$(RUST_TARGET)]"; \
-	  echo "linker = \"$(TARGET_CC_NOCACHE)\""; \
-	  echo "ar = \"$(TARGET_AR)\""; \
+	  echo '[target.$(RUST_TARGET)]'; \
+	  echo 'linker = "$(OPENWRT_GCC)"'; \
+	  echo 'ar = "$(OPENWRT_AR)"'; \
 	) > $(PKG_BUILD_DIR)/.cargo/config.toml
+
+	# Patch crate librespot jika kamu memang perlu pin/patch (opsional)
+	# echo '' >> $(PKG_BUILD_DIR)/Cargo.toml
+	# echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
+	# echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
 endef
 
-# Compile dengan cargo host (rustup), link ke sysroot SDK
+# Build via cargo langsung, tanpa cargo.mk dari feeds
 define Build/Compile
-	cd $(PKG_BUILD_DIR) && \
-	PKG_CONFIG_ALLOW_CROSS=1 \
-	PKG_CONFIG_PATH="$(STAGING_DIR)/usr/lib/pkgconfig:$(STAGING_DIR)/usr/share/pkgconfig" \
-	OPENSSL_NO_VENDOR=1 \
-	CC_$(RUST_TARGET)="$(TARGET_CC_NOCACHE)" \
-	AR_$(RUST_TARGET)="$(TARGET_AR)" \
-	RUSTFLAGS="-C debuginfo=0" \
-	cargo build --release --target $(RUST_TARGET) --locked \
-	  --no-default-features --features "$(CARGO_FEATURES)" --bin spotifyd
+	( \
+	  cd $(PKG_BUILD_DIR); \
+	  export PKG_CONFIG_ALLOW_CROSS=1; \
+	  export OPENSSL_NO_VENDOR=1; \
+	  export OPENSSL_DIR="$(STAGING_DIR)/usr"; \
+	  export OPENSSL_LIB_DIR="$(STAGING_DIR)/usr/lib"; \
+	  export OPENSSL_INCLUDE_DIR="$(STAGING_DIR)/usr/include"; \
+	  export RUSTFLAGS="-C debuginfo=0"; \
+	  # Fitur default = ALSA backend (lihat Cargo.toml upstream)
+	  cargo build --release --locked --target $(RUST_TARGET); \
+	)
+	# pastikan biner ada
+	[ -x "$(CARGO_BIN)" ] || { echo "spotifyd binary missing"; exit 1; }
 endef
 
 define Package/spotifyd-ng/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/$(RUST_TARGET)/release/spotifyd $(1)/usr/bin/spotifyd
-
-ifneq ("$(wildcard ./files/spotifyd.init)","")
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/spotifyd.init $(1)/etc/init.d/spotifyd
-endif
+	$(INSTALL_BIN) $(CARGO_BIN) $(1)/usr/bin/spotifyd
+	# contoh initscript sederhana (opsional):
+	# $(INSTALL_DIR) $(1)/etc/init.d
+	# $(INSTALL_BIN) ./files/spotifyd.init $(1)/etc/init.d/spotifyd
 endef
 
 $(eval $(call BuildPackage,spotifyd-ng))
