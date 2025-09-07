@@ -13,11 +13,10 @@ PKG_BUILD_DEPENDS:=rust/host
 
 include $(INCLUDE_DIR)/package.mk
 
-# Include cargo.mk jika Rust available
 ifeq ($(CONFIG_PACKAGE_RUST),y)
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 else
-$(error Rust package is required but not selected. Please enable CONFIG_PACKAGE_RUST)
+$(error Rust package is required but not selected)
 endif
 
 define Package/spotifyd-ng
@@ -33,7 +32,6 @@ define Package/spotifyd-ng/description
 endef
 
 define Build/Configure
-	# Apply librespot patch
 	$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml
 	echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
@@ -48,7 +46,6 @@ define Package/spotifyd-ng/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/release/spotifyd $(1)/usr/bin/
 endef
 
-# Build hanya dengan ALSA backend
 CARGO_ARGS += --no-default-features --features alsa_backend
 
 $(eval $(call BuildPackage,spotifyd-ng))

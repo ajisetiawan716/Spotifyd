@@ -44,7 +44,8 @@ jobs:
             xz-utils tar \
             python3 python3-distutils \
             libncurses-dev \
-            unzip rsync
+            unzip rsync \
+            gawk gettext
 
       - name: Download OpenWrt SDK
         run: |
@@ -52,63 +53,59 @@ jobs:
           echo "Downloading SDK for ${{ matrix.target }}..."
           curl -fsSL "${{ matrix.sdk }}" -o sdk.tar.xz
           tar -xf sdk.tar.xz
-          echo "SDK_DIR=$(echo openwrt-sdk-*)" >> $GITHUB_ENV
-          echo "STAGING_DIR=$GITHUB_WORKSPACE/$(echo openwrt-sdk-*)/staging_dir" >> $GITHUB_ENV
+          SDK_DIR=$(echo openwrt-sdk-*)
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          echo "STAGING_DIR=$GITHUB_WORKSPACE/$SDK_DIR/staging_dir" >> $GITHUB_ENV
 
-      - name: Setup environment variables
-        run: |
-          echo "PATH=${{ env.STAGING_DIR }}/toolchain/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-gcc'; else echo 'aarch64-openwrt-linux-musl-gcc'; fi)" >> $GITHUB_ENV
-          echo "CXX=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-g++'; else echo 'aarch64-openwrt-linux-musl-g++'; fi)" >> $GITHUB_ENV
-          echo "AR=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-ar'; else echo 'aarch64-openwrt-linux-musl-ar'; fi)" >> $GITHUB_ENV
-
-      - name: Setup OpenWrt feeds dengan benar
+      - name: Prepare SDK environment
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          # Update semua feeds
+          mkdir -p host/.prereq-build
+          touch host/.prereq-build
+
+      - name: Setup package feeds
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          export TERM=dumb
+          export KCONFIG_NONINTERACTIVE=1
+          
           ./scripts/feeds update -a
-          
-          # Install semua packages dari feeds packages
           ./scripts/feeds install -a -p packages
-          
-          # Install dependencies yang diperlukan
           ./scripts/feeds install rust
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
-          
-          # Tambahkan local feed dengan path yang benar
-          echo "src-link local $GITHUB_WORKSPACE" >> feeds.conf.default
-          ./scripts/feeds update local
-          ./scripts/feeds install -a -p local
 
-      - name: Configure SDK untuk non-interactive build
+      - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          # Buat defconfig
-          make defconfig
+          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
+          ./scripts/feeds update local
+          ./scripts/feeds install -a -p local
+
+      - name: Configure SDK
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          export TERM=dumb
+          export KCONFIG_NONINTERACTIVE=1
           
-          # Pastikan Rust dan spotifyd-ng enabled
+          make defconfig
           echo "CONFIG_PACKAGE_RUST=y" >> .config
           echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
           echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
           echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
           echo "CONFIG_PACKAGE_libpthread=y" >> .config
-          
-          # Update config
           make defconfig
-          
-          # Verifikasi config
-          grep "CONFIG_PACKAGE_RUST=y" .config || echo "Rust not enabled!"
-          grep "CONFIG_PACKAGE_spotifyd-ng=y" .config || echo "spotifyd-ng not enabled!"
 
       - name: Build spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
@@ -117,40 +114,16 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          # Build package dengan verbose output
           make package/feeds/local/spotifyd-ng/compile V=s
 
-      - name: Collect built IPK packages
+      - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
-          
-          # Cari file IPK yang berhasil dibuild
           find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          
-          # Jika tidak ditemukan, cari di semua directory
-          if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
-            echo "Searching for IPK files in all directories..."
-            find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          fi
-          
-          # List files yang ditemukan
           echo "Built packages:"
           ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || true
-
-      - name: Verify IPK package contents
-        run: |
-          set -eux
-          if [ -n "$(ls -A "out/${{ matrix.target }}" 2>/dev/null)" ]; then
-            echo "Inspecting IPK package..."
-            for ipk in "out/${{ matrix.target }}"/*.ipk; do
-              echo "Package: $ipk"
-              tar -tzf "$ipk" || true
-            done
-          else
-            echo "No IPK files found for ${{ matrix.target }}"
-          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -159,19 +132,15 @@ jobs:
           path: out/${{ matrix.target }}/
           if-no-files-found: warn
 
-      - name: Debug - List build directory jika gagal
+      - name: Debug info if failed
         if: failure()
         working-directory: ${{ env.SDK_DIR }}
         run: |
           echo "=== DEBUG INFO ==="
           echo "Current directory: $(pwd)"
-          echo "Local feeds contents:"
+          echo "Directory structure:"
+          ls -la
+          echo "Feeds local:"
           ls -la feeds/local/ || true
-          echo "Package directory exists:"
-          ls -la feeds/local/spotifyd-ng/ || true
-          echo "Makefile contents:"
-          cat feeds/local/spotifyd-ng/Makefile || true
-          echo "Rust directory:"
-          ls -la feeds/packages/lang/rust/ || true
-          echo "Config status:"
-          grep "RUST\|spotifyd" .config || true
+          echo "Config:"
+          cat .config 2>/dev/null || echo "No config"
