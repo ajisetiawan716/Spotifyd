@@ -30,8 +30,10 @@ define Package/spotifyd-ng/description
 endef
 
 define Build/Configure
-	# Apply librespot patch
-	$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml
+	# Apply librespot patch dengan approach yang lebih aman
+	if grep -q "\[patch.crates-io\]" $(PKG_BUILD_DIR)/Cargo.toml; then \
+		$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml; \
+	fi
 	echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
 endef
