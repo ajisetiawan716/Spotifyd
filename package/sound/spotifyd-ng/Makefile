@@ -4,11 +4,13 @@ PKG_NAME:=spotifyd-ng
 PKG_VERSION:=0.4.1
 PKG_RELEASE:=1
 
-PKG_MAINTAINER:=Your Name <your@email.com>
-PKG_LICENSE:=GPL-2.0-or-later
-PKG_LICENSE_FILES:=LICENSE
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
+PKG_SOURCE_VERSION:=v0.4.1
+PKG_MIRROR_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
+include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 
 define Package/spotifyd-ng
   SECTION:=sound
@@ -22,23 +24,13 @@ define Package/spotifyd-ng/description
   A spotify playing daemon.
 endef
 
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	cp $(DL_DIR)/spotifyd-$(PKG_VERSION) $(PKG_BUILD_DIR)/ || true
-	$(Build/Patch)
-endef
-
 define Build/Configure
-	# No configuration needed
+	# Patch untuk librespot
+	$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml
+	echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
+	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
 endef
 
-define Build/Compile
-	# Binary sudah di-build sebelumnya, tinggal copy
-endef
-
-define Package/spotifyd-ng/install
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(DL_DIR)/spotifyd-$(PKG_VERSION) $(1)/usr/bin/spotifyd
-endef
+CARGO_ARGS += --no-default-features --features alsa_backend
 
 $(eval $(call BuildPackage,spotifyd-ng))
