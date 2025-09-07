@@ -114,7 +114,7 @@ jobs:
         run: |
           set -eux
           export TERM=dumb
-          export KCONFIG_NONINTERactIVE=1
+          export KCONFIG_NONINTERACTIVE=1
           
           echo "Setting up local feed..."
           echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
@@ -201,25 +201,29 @@ jobs:
           
           if [ "${{ matrix.target }}" = "x86_64" ]; then
             export REAL_GNU_TARGET_NAME=x86_64-openwrt-linux
-            export TARGET_CC="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
-            export TARGET_AR="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
+            export CC="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
+            export AR="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
             export CARGO_TARGET=x86_64-unknown-linux-musl
           elif [ "${{ matrix.target }}" = "aarch64_generic" ]; then
             export REAL_GNU_TARGET_NAME=aarch64-openwrt-linux
-            export TARGET_CC="$STAGING_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-gcc"
-            export TARGET_AR="$STAGING_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-ar"
+            export CC="$STAGING_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-gcc"
+            export AR="$STAGING_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-ar"
             export CARGO_TARGET=aarch64-unknown-linux-musl
           fi
           
+          # Install Rust target yang sesuai
+          rustup target add $CARGO_TARGET
+          
           # Set environment variables untuk Makefile
-          echo "TARGET_CC=$TARGET_CC" >> $GITHUB_ENV
-          echo "TARGET_AR=$TARGET_AR" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
           echo "REAL_GNU_TARGET_NAME=$REAL_GNU_TARGET_NAME" >> $GITHUB_ENV
           echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
           
           echo "Target: $REAL_GNU_TARGET_NAME"
-          echo "CC: $TARGET_CC"
-          echo "AR: $TARGET_AR"
+          echo "Rust Target: $CARGO_TARGET"
+          echo "CC: $CC"
+          echo "AR: $AR"
 
       - name: Build spotifyd-ng package dengan system cargo
         working-directory: ${{ env.SDK_DIR }}
@@ -234,9 +238,9 @@ jobs:
           rustc --version
           
           echo "Cross-compilation environment:"
-          echo "TARGET_CC: $TARGET_CC"
-          echo "TARGET_AR: $TARGET_AR"
-          echo "REAL_GNU_TARGET_NAME: $REAL_GNU_TARGET_NAME"
+          echo "CC: $CC"
+          echo "AR: $AR"
+          echo "CARGO_TARGET: $CARGO_TARGET"
           
           echo "Starting build process..."
           make package/feeds/local/spotifyd-ng/compile V=s
@@ -309,9 +313,9 @@ jobs:
           echo "RUSTUP_HOME: $RUSTUP_HOME"
           
           echo "=== CROSS-COMPILATION ENV ==="
-          echo "TARGET_CC: $TARGET_CC"
-          echo "TARGET_AR: $TARGET_AR"
-          echo "REAL_GNU_TARGET_NAME: $REAL_GNU_TARGET_NAME"
+          echo "CC: $CC"
+          echo "AR: $AR"
+          echo "CARGO_TARGET: $CARGO_TARGET"
           
           echo "=== BUILD LOGS ==="
           find . -name "*.log" -exec echo "=== {} ===" \; -exec tail -10 {} \; 2>/dev/null | head -50
