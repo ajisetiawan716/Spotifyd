@@ -27,8 +27,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install system dependencies
         run: |
@@ -94,24 +92,25 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/binaries"
           cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
 
+      - name: Prepare control file
+        run: |
+          mkdir -p ipk/CONTROL
+          echo "Package: spotifyd-ng" > ipk/CONTROL/control
+          echo "Version: 0.4.1-1" >> ipk/CONTROL/control
+          echo "Depends: libstdcpp, libpthread, alsa-lib" >> ipk/CONTROL/control
+          echo "Source: https://github.com/Spotifyd/spotifyd" >> ipk/CONTROL/control
+          echo "Section: sound" >> ipk/CONTROL/control
+          echo "Category: Sound" >> ipk/CONTROL/control
+          echo "Architecture: ${{ matrix.target }}" >> ipk/CONTROL/control
+          echo "Description: Spotify daemon for OpenWrt" >> ipk/CONTROL/control
+
       - name: Create IPK package
         run: |
           set -eux
-          mkdir -p ipk/CONTROL ipk/usr/bin
+          mkdir -p ipk/usr/bin
           
           cp "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}" ipk/usr/bin/spotifyd
           chmod +x ipk/usr/bin/spotifyd
-          
-          cat > ipk/CONTROL/control << EOF
-Package: spotifyd-ng
-Version: 0.4.1-1
-Depends: libstdcpp, libpthread, alsa-lib
-Source: https://github.com/Spotifyd/spotifyd
-Section: sound
-Category: Sound
-Architecture: ${{ matrix.target }}
-Description: Spotify daemon for OpenWrt
-EOF
           
           cd ipk
           tar -czf ../data.tar.gz ./
@@ -119,6 +118,7 @@ EOF
           tar -czf ../control.tar.gz ./
           cd ..
           echo "2.0" > debian-binary
+          mkdir -p "$GITHUB_WORKSPACE/out"
           tar -czf "$GITHUB_WORKSPACE/out/spotifyd-ng_0.4.1-1_${{ matrix.target }}.ipk" debian-binary control.tar.gz data.tar.gz
 
       - name: Upload artifacts
