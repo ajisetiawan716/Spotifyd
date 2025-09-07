@@ -1,4 +1,4 @@
-name: build-spotifyd-simple
+name: build-spotifyd-muslcc
 
 on:
   workflow_dispatch:
@@ -10,32 +10,29 @@ jobs:
     name: build (${{ matrix.target }})
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false  # Jangan stop jika satu job gagal
       matrix:
         include:
           - target: x86_64
             rust_target: x86_64-unknown-linux-musl
-            linker: x86_64-linux-musl-gcc
-            ar: x86_64-linux-musl-ar
+            musl_tarball: https://musl.cc/x86_64-linux-musl-cross.tgz
+            toolchain_dir: x86_64-linux-musl-cross
           - target: aarch64
             rust_target: aarch64-unknown-linux-musl
-            linker: aarch64-linux-gnu-gcc
-            ar: aarch64-linux-gnu-ar
+            musl_tarball: https://musl.cc/aarch64-linux-musl-cross.tgz
+            toolchain_dir: aarch64-linux-musl-cross
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install complete musl cross-compiler
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            git curl ca-certificates \
-            musl-tools \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            gcc-x86-64-linux-gnu \
-            binutils-x86-64-linux-gnu
+          # Download dan extract complete musl cross-compiler
+          wget ${{ matrix.musl_tarball }}
+          tar -xf $(basename ${{ matrix.musl_tarball }})
+          echo "$(pwd)/${{ matrix.toolchain_dir }}/bin" >> $GITHUB_PATH
+          echo "MUSL_ROOT=$(pwd)/${{ matrix.toolchain_dir }}" >> $GITHUB_ENV
 
       - name: Install Rust
         run: |
@@ -43,12 +40,12 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup target add ${{ matrix.rust_target }}
 
-      - name: Setup cargo config tanpa heredoc
+      - name: Setup cargo config
         run: |
           mkdir -p $HOME/.cargo
           echo "[target.${{ matrix.rust_target }}]" > $HOME/.cargo/config.toml
-          echo "linker = \"${{ matrix.linker }}\"" >> $HOME/.cargo/config.toml
-          echo "ar = \"${{ matrix.ar }}\"" >> $HOME/.cargo/config.toml
+          echo "linker = \"${{ matrix.toolchain_dir }}/bin/${{ matrix.target }}-linux-musl-gcc\"" >> $HOME/.cargo/config.toml
+          echo "ar = \"${{ matrix.toolchain_dir }}/bin/${{ matrix.target }}-linux-musl-ar\"" >> $HOME/.cargo/config.toml
 
       - name: Build spotifyd
         run: |
@@ -60,10 +57,10 @@ jobs:
           echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
           
           # Set environment variables
-          export CC_$(echo ${{ matrix.rust_target }} | tr - _)=${{ matrix.linker }}
-          export AR_$(echo ${{ matrix.rust_target }} | tr - _)=${{ matrix.ar }}
-          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_LINKER=${{ matrix.linker }}
-          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_AR=${{ matrix.ar }}
+          export CC="${{ matrix.toolchain_dir }}/bin/${{ matrix.target }}-linux-musl-gcc"
+          export AR="${{ matrix.toolchain_dir }}/bin/${{ matrix.target }}-linux-musl-ar"
+          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_LINKER="$CC"
+          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_AR="$AR"
           
           cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
           
@@ -94,5 +91,5 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: spotifyd-ipks
+          name: spotifyd-${{ matrix.target }}-ipk
           path: out/
