@@ -19,9 +19,6 @@ jobs:
           - target: x86_64
             pretty: x86-64
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-          - target: aarch64_generic
-            pretty: mediatek-filogic
-            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
     env:
       TERM: dumb
@@ -34,6 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: 'main-repo'
 
       - name: Install system dependencies
         run: |
@@ -83,7 +81,6 @@ jobs:
           echo "Installing package dependencies..."
           ./scripts/feeds install -a -p packages
           ./scripts/feeds install rust
-          ./scripts/feeds install rust-stdlib
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
@@ -98,7 +95,7 @@ jobs:
           export KCONFIG_NONINTERACTIVE=1
           
           echo "Setting up local feed..."
-          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
+          echo "src-link local $GITHUB_WORKSPACE/main-repo/package" >> feeds.conf.default
           ./scripts/feeds update local
           ./scripts/feeds install -a -p local
           
@@ -116,9 +113,8 @@ jobs:
           make defconfig
           
           echo "Step 2: Enable required packages"
-          # Enable packages yang diperlukan untuk build
+          # Hanya enable packages yang tersedia
           echo "CONFIG_PACKAGE_rust=y" >> .config
-          echo "CONFIG_PACKAGE_rust-stdlib=y" >> .config
           echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
           echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
           echo "CONFIG_PACKAGE_libpthread=y" >> .config
@@ -128,7 +124,7 @@ jobs:
           
           echo "Step 4: Verify configuration"
           echo "=== CONFIG STATUS ==="
-          REQUIRED_PACKAGES="rust rust-stdlib alsa-lib libstdcpp libpthread"
+          REQUIRED_PACKAGES="rust alsa-lib libstdcpp libpthread"
           
           for pkg in $REQUIRED_PACKAGES; do
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
@@ -151,10 +147,9 @@ jobs:
           
           echo "=== BUILDING SPOTIFYD-NG ==="
           echo "Starting build process..."
-          echo "Note: Rust and dependencies will be built automatically"
           
-          # Build dengan verbose output untuk debugging
-          make package/feeds/local/spotifyd-ng/compile V=sc -j$(nproc) 2>&1 | tee build.log
+          # Build dengan output verbose
+          make package/feeds/local/spotifyd-ng/compile V=s
 
       - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
@@ -163,10 +158,8 @@ jobs:
           echo "=== COLLECTING ARTIFACTS ==="
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
           
-          # Cari package yang berhasil dibuild
           find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
           
-          # Jika tidak ditemukan di bin, cari di tempat lain
           if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
             echo "Searching in other directories..."
             find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
@@ -181,42 +174,3 @@ jobs:
           name: spotifyd-${{ matrix.target }}-ipk
           path: out/${{ matrix.target }}/
           if-no-files-found: warn
-
-      - name: Debug info if failed
-        if: failure()
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          echo "=== DEBUG INFO ==="
-          echo "Current directory: $(pwd)"
-          echo "Working directory: ${{ env.SDK_DIR }}"
-          
-          echo "=== CONFIG STATUS ==="
-          if [ -f .config ]; then
-            echo "Rust config: $(grep 'CONFIG_PACKAGE_rust' .config || echo 'NOT FOUND')"
-            echo "Rust stdlib config: $(grep 'CONFIG_PACKAGE_rust-stdlib' .config || echo 'NOT FOUND')"
-            echo "alsa-lib config: $(grep 'CONFIG_PACKAGE_alsa-lib' .config || echo 'NOT FOUND')"
-          else
-            echo "No .config file found"
-          fi
-          
-          echo "=== FEEDS STATUS ==="
-          ls -la feeds/ 2>/dev/null || echo "No feeds directory"
-          ./scripts/feeds list -r local 2>/dev/null || echo "Cannot list local feeds"
-          
-          echo "=== BUILD LOGS TAIL ==="
-          if [ -f build.log ]; then
-            tail -50 build.log || echo "Cannot read build.log"
-          else
-            echo "No build.log found"
-            find . -name "*.log" -exec echo "=== {} ===" \; -exec tail -10 {} \; 2>/dev/null | head -50
-          fi
-          
-          echo "=== RUST COMPILER CHECK ==="
-          if [ -d "$STAGING_DIR" ]; then
-            find "$STAGING_DIR" -name "rustc" -type f 2>/dev/null | head -5 || echo "rustc not found in staging"
-          else
-            echo "STAGING_DIR not found: $STAGING_DIR"
-          fi
-          
-          echo "=== DIRECTORY STRUCTURE ==="
-          ls -la package/feeds/local/ 2>/dev/null || echo "No local feed directory"
