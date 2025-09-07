@@ -13,20 +13,20 @@ PKG_BUILD_DEPENDS:=rust/host
 
 include $(INCLUDE_DIR)/package.mk
 
-# Better Rust detection with debug info
+# Manual check for Rust package - jangan bergantung pada CONFIG_PACKAGE_RUST variable
 define CheckRust
-ifeq ($(CONFIG_PACKAGE_RUST),y)
-$(info ✅ Rust package enabled in config)
+ifeq ($(shell grep -c "CONFIG_PACKAGE_rust=y" $(TOPDIR)/.config),1)
+$(info ✅ Rust package enabled in .config)
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 else
-$(info === RUST CONFIGURATION DEBUG ===)
-$(info CONFIG_PACKAGE_RUST value: $(CONFIG_PACKAGE_RUST))
-$(info Checking Rust package availability...)
+$(info === RUST CONFIGURATION ERROR ===)
+$(info Checking .config file directly...)
+$(info Rust config in .config: $(shell grep "CONFIG_PACKAGE_rust" $(TOPDIR)/.config 2>/dev/null || echo "NOT FOUND"))
 $(info Please ensure:)
-$(info 1. Rust package is installed in feeds: ./scripts/feeds install rust)
-$(info 2. Rust is enabled in config: CONFIG_PACKAGE_rust=y)
-$(info 3. Run 'make defconfig' after enabling Rust)
-$(error Build cannot continue - Rust package not properly configured)
+$(info 1. Run: ./scripts/feeds install rust)
+$(info 2. Enable in .config: echo "CONFIG_PACKAGE_rust=y" >> .config)
+$(info 3. Run: make defconfig)
+$(error Build cannot continue - Rust not properly configured)
 endif
 endef
 
