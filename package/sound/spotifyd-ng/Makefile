@@ -9,9 +9,12 @@ PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
 PKG_SOURCE_VERSION:=v0.4.1
 PKG_MIRROR_HASH:=skip
 
-#PKG_BUILD_DEPENDS:=rust/host
+# HAPUS rust/host dependency karena kita menggunakan prebuilt Rust
+# PKG_BUILD_DEPENDS:=rust/host
 
 include $(INCLUDE_DIR)/package.mk
+
+# Tetap gunakan cargo.mk tapi dengan custom setup
 include $(INCLUDE_DIR)/cargo.mk
 
 define Package/spotifyd-ng
@@ -34,6 +37,9 @@ define Build/Configure
 endef
 
 define Build/Compile
+	# Export environment variables untuk system Rust
+	export CARGO_HOME="$(CARGO_HOME)" && \
+	export PATH="$(CARGO_HOME)/bin:$(PATH)" && \
 	$(call Build/Compile/Cargo,--
 		no-default-features \
 		--features alsa_backend \
