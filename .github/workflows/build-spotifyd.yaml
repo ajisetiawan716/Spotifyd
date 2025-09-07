@@ -1,4 +1,4 @@
-name: build-spotifyd-complete
+name: build-spotifyd-simple
 
 on:
   workflow_dispatch:
@@ -14,12 +14,10 @@ jobs:
         include:
           - target: x86_64
             rust_target: x86_64-unknown-linux-musl
-            musl_toolchain: musl-tools
             linker: x86_64-linux-musl-gcc
             ar: x86_64-linux-musl-ar
           - target: aarch64
             rust_target: aarch64-unknown-linux-musl
-            musl_toolchain: gcc-aarch64-linux-gnu musl-tools
             linker: aarch64-linux-gnu-gcc
             ar: aarch64-linux-gnu-ar
 
@@ -27,33 +25,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install complete musl toolchain
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             git curl ca-certificates \
-            ${{ matrix.musl_toolchain }} \
-            binutils-x86-64-linux-gnu \
+            musl-tools \
+            gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
-            musl-dev
+            gcc-x86-64-linux-gnu \
+            binutils-x86-64-linux-gnu
 
-      - name: Install Rust and setup target
+      - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source $HOME/.cargo/env
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup target add ${{ matrix.rust_target }}
-          
-          # Setup cargo config dengan semua tools yang diperlukan
-          mkdir -p $HOME/.cargo
-          cat > $HOME/.cargo/config.toml << EOF
-[target.${{ matrix.rust_target }}]
-linker = "${{ matrix.linker }}"
-ar = "${{ matrix.ar }}"
-ranlib = "${${matrix.ar}/ar/ranlib}"
-EOF
 
-      - name: Build spotifyd dengan environment variables
+      - name: Setup cargo config tanpa heredoc
+        run: |
+          mkdir -p $HOME/.cargo
+          echo "[target.${{ matrix.rust_target }}]" > $HOME/.cargo/config.toml
+          echo "linker = \"${{ matrix.linker }}\"" >> $HOME/.cargo/config.toml
+          echo "ar = \"${{ matrix.ar }}\"" >> $HOME/.cargo/config.toml
+
+      - name: Build spotifyd
         run: |
           git clone https://github.com/Spotifyd/spotifyd.git spotifyd-source
           cd spotifyd-source
@@ -62,14 +59,13 @@ EOF
           echo '[patch.crates-io]' >> Cargo.toml
           echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
           
-          # Set semua environment variables yang diperlukan oleh ring crate
+          # Set environment variables
           export CC_$(echo ${{ matrix.rust_target }} | tr - _)=${{ matrix.linker }}
           export AR_$(echo ${{ matrix.rust_target }} | tr - _)=${{ matrix.ar }}
           export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_LINKER=${{ matrix.linker }}
           export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_AR=${{ matrix.ar }}
           
-          # Build dengan verbose output untuk debug
-          cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }} -v
+          cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
           
           mkdir -p "$GITHUB_WORKSPACE/binaries"
           cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
