@@ -14,17 +14,18 @@ PKG_BUILD_DEPENDS:=rust/host
 include $(INCLUDE_DIR)/package.mk
 
 # Check if Rust is available with better error handling
-define CheckRust
 ifeq ($(CONFIG_PACKAGE_RUST),y)
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 else
-$(info WARNING: Rust package is not selected in config)
-$(info Please enable CONFIG_PACKAGE_RUST in menuconfig: Languages -> Rust)
-$(error Build cannot continue without Rust)
+$(info === RUST PACKAGE CONFIGURATION ERROR ===)
+$(info Current CONFIG_PACKAGE_RUST value: $(CONFIG_PACKAGE_RUST))
+$(info Please enable Rust package in OpenWrt configuration:)
+$(info 1. Run 'make menuconfig' in SDK directory)
+$(info 2. Navigate to 'Languages' -> 'Rust')
+$(info 3. Select 'Rust' and save configuration)
+$(info 4. Run 'make defconfig' to update configuration)
+$(error Build cannot continue without Rust package)
 endif
-endef
-
-$(eval $(call CheckRust))
 
 define Package/spotifyd-ng
   SECTION:=sound

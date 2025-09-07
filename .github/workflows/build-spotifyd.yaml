@@ -64,8 +64,10 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "Creating prerequisite directories..."
           mkdir -p host/.prereq-build
           touch host/.prereq-build
+          echo "Prerequisite setup completed"
 
       - name: Setup package feeds
         working-directory: ${{ env.SDK_DIR }}
@@ -74,12 +76,16 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "Updating feeds..."
           ./scripts/feeds update -a
+          
+          echo "Installing package dependencies..."
           ./scripts/feeds install -a -p packages
           ./scripts/feeds install rust
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
+          echo "Package dependencies installed"
 
       - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
@@ -88,34 +94,64 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "Setting up local feed..."
           echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
           ./scripts/feeds update local
           ./scripts/feeds install -a -p local
+          echo "Local feed setup completed"
 
-      - name: Configure SDK dengan benar
+      - name: Configure SDK dengan verification kuat
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          # Buat defconfig pertama
+          echo "Step 1: Initial defconfig"
           make defconfig
           
-          # Pastikan Rust terpilih - gunakan sed untuk modify config
-          sed -i 's/# CONFIG_PACKAGE_RUST is not set/CONFIG_PACKAGE_RUST=y/' .config
-          echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
-          echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
-          echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
-          echo "CONFIG_PACKAGE_libpthread=y" >> .config
+          echo "Step 2: Verify .config exists"
+          if [ ! -f .config ]; then
+            echo "ERROR: .config file not found after defconfig!"
+            echo "Directory contents:"
+            ls -la
+            exit 1
+          fi
           
-          # Update config
+          echo "Step 3: Enabling required packages..."
+          # List packages to enable
+          PACKAGES="rust spotifyd-ng alsa-lib libstdcpp libpthread"
+          
+          for pkg in $PACKAGES; do
+            echo "Enabling package: $pkg"
+            if grep -q "# CONFIG_PACKAGE_${pkg} is not set" .config; then
+              sed -i "s/# CONFIG_PACKAGE_${pkg} is not set/CONFIG_PACKAGE_${pkg}=y/" .config
+              echo "Enabled $pkg via sed"
+            elif ! grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+              echo "Added $pkg to config"
+            else
+              echo "$pkg already enabled"
+            fi
+          done
+          
+          echo "Step 4: Final defconfig"
           make defconfig
           
-          # Verifikasi Rust benar-benar terpilih
+          echo "Step 5: Final verification"
           echo "=== CONFIG STATUS ==="
-          grep "CONFIG_PACKAGE_RUST" .config
-          grep "CONFIG_PACKAGE_spotifyd-ng" .config
+          for pkg in $PACKAGES; do
+            if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+              echo "✅ CONFIG_PACKAGE_${pkg}=y"
+            else
+              echo "❌ CONFIG_PACKAGE_${pkg} NOT ENABLED!"
+              echo "Current config for $pkg:"
+              grep "CONFIG_PACKAGE_${pkg}" .config || echo "Not found"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All required packages enabled successfully"
 
       - name: Build spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
@@ -124,16 +160,29 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "Starting build process..."
           make package/feeds/local/spotifyd-ng/compile V=s
+          echo "Build process completed"
 
       - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
+          echo "Collecting build artifacts..."
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
+          
+          # Find and copy IPK files
           find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          echo "Built packages:"
-          ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || true
+          
+          # Check if any files were found
+          if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
+            echo "Warning: No IPK files found in bin directory"
+            echo "Searching in other directories..."
+            find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          fi
+          
+          echo "Artifacts collected:"
+          ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || echo "No artifacts found"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -146,9 +195,42 @@ jobs:
         if: failure()
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          echo "=== DEBUG INFO ==="
+          echo "=== DETAILED DEBUG INFO ==="
           echo "Current directory: $(pwd)"
-          echo "Config status:"
-          grep "CONFIG_PACKAGE_RUST\|CONFIG_PACKAGE_spotifyd-ng" .config 2>/dev/null || echo "No config found"
-          echo "Feeds local:"
-          ls -la feeds/local/ 2>/dev/null || echo "No local feeds"
+          echo "Directory structure:"
+          ls -la
+          
+          echo "=== .CONFIG STATUS ==="
+          if [ -f .config ]; then
+            echo "Config file exists"
+            echo "Rust config: $(grep 'CONFIG_PACKAGE_rust' .config || echo 'NOT FOUND')"
+            echo "spotifyd-ng config: $(grep 'CONFIG_PACKAGE_spotifyd-ng' .config || echo 'NOT FOUND')"
+            echo "First 10 lines of .config:"
+            head -10 .config
+          else
+            echo "ERROR: .config file does not exist!"
+            echo "Creating test config to verify permissions..."
+            touch test_config.txt
+            ls -la test_config.txt
+            rm -f test_config.txt
+          fi
+          
+          echo "=== FEEDS STATUS ==="
+          echo "Local feeds:"
+          ls -la feeds/local/ 2>/dev/null || echo "No local feeds directory"
+          
+          echo "Package feeds:"
+          ls -la feeds/packages/ 2>/dev/null || echo "No packages feeds directory"
+          
+          echo "=== RUST PACKAGE STATUS ==="
+          echo "Rust package files:"
+          find feeds/packages/lang/rust -name "*" 2>/dev/null || echo "Rust package not found"
+          
+          echo "=== SDK TOOLCHAIN ==="
+          echo "Toolchain directory:"
+          ls -la staging_dir/toolchain/ 2>/dev/null || echo "No toolchain directory"
+          
+          echo "=== DISK SPACE ==="
+          df -h
+          echo "=== MEMORY INFO ==="
+          free -h
