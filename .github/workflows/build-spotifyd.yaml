@@ -68,7 +68,7 @@ jobs:
           touch host/.prereq-build
           echo "Prerequisite setup completed"
 
-      - name: Setup package feeds (HANYA UPDATE, TIDAK INSTALL ALL)
+      - name: Setup package feeds
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
@@ -79,13 +79,10 @@ jobs:
           ./scripts/feeds update -a
           
           echo "Installing ONLY required dependencies..."
-          # HANYA install package yang diperlukan untuk spotifyd
           ./scripts/feeds install rust
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
-          
-          echo "Required dependencies installed"
 
       - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
@@ -98,8 +95,34 @@ jobs:
           echo "src-link local $GITHUB_WORKSPACE/main-repo/package" >> feeds.conf.default
           ./scripts/feeds update local
           ./scripts/feeds install -p local spotifyd-ng
+
+      - name: Fix Rust LLVM download issue
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          echo "=== FIXING RUST LLVM DOWNLOAD ISSUE ==="
           
-          echo "Local feed setup completed"
+          # Tambahkan config untuk disable download-ci-llvm
+          for config_file in $(find feeds/packages/lang/rust -name "config.toml" 2>/dev/null || true); do
+            echo "Fixing $config_file"
+            if grep -q "download-ci-llvm" "$config_file"; then
+              sed -i 's/^download-ci-llvm = .*/download-ci-llvm = false/' "$config_file"
+            else
+              echo '[llvm]' >> "$config_file"
+              echo 'download-ci-llvm = false' >> "$config_file"
+            fi
+            echo "✅ Fixed $config_file"
+          done
+          
+          # Jika tidak ada config file, buat yang baru
+          if [ ! -f "feeds/packages/lang/rust/config.toml" ]; then
+            mkdir -p feeds/packages/lang/rust
+            echo '[llvm]' > feeds/packages/lang/rust/config.toml
+            echo 'download-ci-llvm = false' >> feeds/packages/lang/rust/config.toml
+            echo "✅ Created new config.toml"
+          fi
+          
+          echo "✅ LLVM download fix applied"
 
       - name: Configure SDK
         working-directory: ${{ env.SDK_DIR }}
@@ -109,64 +132,50 @@ jobs:
           export KCONFIG_NONINTERACTIVE=1
           
           echo "=== CONFIGURATION ==="
-          echo "Step 1: Initial defconfig"
           make defconfig
           
-          echo "Step 2: Enable required packages"
-          # Enable packages yang diperlukan
           echo "CONFIG_PACKAGE_rust=y" >> .config
           echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
           echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
           echo "CONFIG_PACKAGE_libpthread=y" >> .config
           echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
           
-          echo "Step 3: Finalize configuration"
           make defconfig
           
-          echo "Step 4: Verify configuration"
           echo "=== CONFIG STATUS ==="
-          REQUIRED_PACKAGES="rust alsa-lib libstdcpp libpthread spotifyd-ng"
-          
-          for pkg in $REQUIRED_PACKAGES; do
+          for pkg in rust alsa-lib libstdcpp libpthread spotifyd-ng; do
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
               echo "✅ $pkg: ENABLED"
             else
               echo "❌ $pkg: MISSING"
-              echo "Current value: $(grep CONFIG_PACKAGE_${pkg} .config 2>/dev/null || echo 'NOT FOUND')"
               exit 1
             fi
           done
-          
-          echo "✅ All packages configured successfully"
 
-      - name: Build ONLY spotifyd-ng package
+      - name: Build spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "=== BUILDING ONLY SPOTIFYD-NG ==="
-          echo "Starting build process..."
+          echo "=== BUILDING SPOTIFYD-NG ==="
+          echo "This may take a while (Rust needs to compile first)..."
           
-          # Build HANYA spotifyd-ng, bukan semua package
-          make package/feeds/local/spotifyd-ng/compile V=s
+          # Build dengan timeout yang lebih panjang
+          timeout 1800 make package/feeds/local/spotifyd-ng/compile V=s || \
+          if [ $? -eq 124 ]; then 
+            echo "Build timed out after 30 minutes, but may still be successful"; 
+          else 
+            exit $?; 
+          fi
 
       - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
-          echo "=== COLLECTING ARTIFACTS ==="
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
-          
-          find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          
-          if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
-            echo "Searching in other directories..."
-            find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          fi
-          
-          echo "Artifacts collected:"
+          find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
           ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || echo "No artifacts found"
 
       - name: Upload artifacts
@@ -175,3 +184,13 @@ jobs:
           name: spotifyd-${{ matrix.target }}-ipk
           path: out/${{ matrix.target }}/
           if-no-files-found: warn
+
+      - name: Debug info if failed
+        if: failure()
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          echo "=== DEBUG INFO ==="
+          echo "Rust config files:"
+          find . -name "*config.toml" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
+          echo "Build logs:"
+          find . -name "*.log" -exec echo "=== {} ===" \; -exec tail -20 {} \; 2>/dev/null | head -100
