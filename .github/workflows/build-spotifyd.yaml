@@ -1,11 +1,9 @@
-name: build-spotifyd-docker
+name: build-spotifyd-direct
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths:
-      - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
   build:
@@ -16,23 +14,39 @@ jobs:
         include:
           - target: x86_64
             rust_target: x86_64-unknown-linux-musl
-            arch: x86_64
+            cross_toolchain: gcc-x86-64-linux-gnu
+            linker: x86_64-linux-musl-gcc
           - target: aarch64
             rust_target: aarch64-unknown-linux-musl
-            arch: aarch64
+            cross_toolchain: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build with cross Docker
+      - name: Install system dependencies
         run: |
-          # Build menggunakan cross (Docker-based cross compilation)
-          cargo install cross --git https://github.com/cross-rs/cross
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            git curl ca-certificates \
+            ${{ matrix.cross_toolchain }} \
+            musl-tools
+
+      - name: Install Rust and setup target
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup target add ${{ matrix.rust_target }}
           
+          # Setup cargo config
+          mkdir -p $HOME/.cargo
+          echo "[target.${{ matrix.rust_target }}]" > $HOME/.cargo/config.toml
+          echo "linker = \"${{ matrix.linker }}\"" >> $HOME/.cargo/config.toml
+
+      - name: Build spotifyd
+        run: |
           git clone https://github.com/Spotifyd/spotifyd.git spotifyd-source
           cd spotifyd-source
           git checkout v0.4.1
@@ -40,20 +54,26 @@ jobs:
           echo '[patch.crates-io]' >> Cargo.toml
           echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
           
-          cross build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
+          # Set environment variables
+          if [ "${{ matrix.target }}" = "aarch64" ]; then
+            export CC_aarch64_unknown_linux_musl="aarch64-linux-gnu-gcc"
+            export AR_aarch64_unknown_linux_musl="aarch64-linux-gnu-ar"
+          else
+            export CC_x86_64_unknown_linux_musl="x86_64-linux-musl-gcc"
+            export AR_x86_64_unknown_linux_musl="x86_64-linux-musl-ar"
+          fi
+          
+          cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
           
           mkdir -p "$GITHUB_WORKSPACE/binaries"
           cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
 
       - name: Create IPK package
         run: |
-          set -eux
-          mkdir -p ipk/CONTROL ipk/usr/bin
-          
+          mkdir -p ipk/usr/bin ipk/CONTROL
           cp "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}" ipk/usr/bin/spotifyd
           chmod +x ipk/usr/bin/spotifyd
           
-          # Buat control file sederhana
           echo "Package: spotifyd-ng" > ipk/CONTROL/control
           echo "Version: 0.4.1-1" >> ipk/CONTROL/control
           echo "Depends: libstdcpp, libpthread, alsa-lib" >> ipk/CONTROL/control
@@ -72,5 +92,5 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: spotifyd-${{ matrix.target }}-ipk
+          name: spotifyd-ipks
           path: out/
