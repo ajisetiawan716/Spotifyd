@@ -96,6 +96,25 @@ jobs:
           
           echo "Package dependencies installed"
 
+      - name: Build alsa-lib first
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          export TERM=dumb
+          export KCONFIG_NONINTERACTIVE=1
+          
+          echo "=== BUILDING ALSA-LIB FIRST ==="
+          make package/feeds/packages/alsa-lib/compile V=s
+
+      - name: Check alsa library availability
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          echo "=== CHECKING ALSA LIBRARY ==="
+          find $(STAGING_DIR) -name "*asound*" -type f | head -10
+          ls -la $(STAGING_DIR)/usr/lib/libasound* 2>/dev/null || echo "No alsa libraries found"
+          find $(STAGING_DIR) -name "libasound.so*" | head -5
+
       - name: Remove rust package from feeds to prevent conflict
         working-directory: ${{ env.SDK_DIR }}
         run: |
@@ -219,11 +238,13 @@ jobs:
           echo "AR=$AR" >> $GITHUB_ENV
           echo "REAL_GNU_TARGET_NAME=$REAL_GNU_TARGET_NAME" >> $GITHUB_ENV
           echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
+          echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
           
           echo "Target: $REAL_GNU_TARGET_NAME"
           echo "Rust Target: $CARGO_TARGET"
           echo "CC: $CC"
           echo "AR: $AR"
+          echo "STAGING_DIR: $STAGING_DIR"
 
       - name: Build spotifyd-ng package dengan system cargo
         working-directory: ${{ env.SDK_DIR }}
@@ -241,6 +262,7 @@ jobs:
           echo "CC: $CC"
           echo "AR: $AR"
           echo "CARGO_TARGET: $CARGO_TARGET"
+          echo "STAGING_DIR: $STAGING_DIR"
           
           echo "Starting build process..."
           make package/feeds/local/spotifyd-ng/compile V=s
@@ -316,6 +338,10 @@ jobs:
           echo "CC: $CC"
           echo "AR: $AR"
           echo "CARGO_TARGET: $CARGO_TARGET"
+          echo "STAGING_DIR: $STAGING_DIR"
+          
+          echo "=== ALSA LIBRARY CHECK ==="
+          find $(STAGING_DIR) -name "*asound*" -type f | head -10 || echo "No alsa files found"
           
           echo "=== BUILD LOGS ==="
           find . -name "*.log" -exec echo "=== {} ===" \; -exec tail -10 {} \; 2>/dev/null | head -50

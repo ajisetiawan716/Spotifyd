@@ -46,11 +46,16 @@ define Build/Compile
 	PKG_CONFIG_ALLOW_CROSS=1 \
 	PKG_CONFIG_PATH="$(STAGING_DIR)/usr/lib/pkgconfig" \
 	PKG_CONFIG_SYSROOT_DIR="$(STAGING_DIR)" \
+	PKG_CONFIG_LIBDIR="$(STAGING_DIR)/usr/lib/pkgconfig" \
+	ALSA_LIB_DIR="$(STAGING_DIR)/usr/lib" \
+	ALSA_INCLUDE_DIR="$(STAGING_DIR)/usr/include" \
 	cargo build \
 		--release \
 		--no-default-features \
 		--features alsa_backend \
-		--target $(CARGO_TARGET)
+		--target $(CARGO_TARGET) \
+		--config target.$(CARGO_TARGET).linker='$(CC)' \
+		--config target.$(CARGO_TARGET).ar='$(AR)'
 endef
 
 define Package/spotifyd-ng/install
