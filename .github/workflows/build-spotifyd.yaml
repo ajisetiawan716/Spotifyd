@@ -68,7 +68,7 @@ jobs:
           touch host/.prereq-build
           echo "Prerequisite setup completed"
 
-      - name: Setup package feeds
+      - name: Setup package feeds (HANYA UPDATE, TIDAK INSTALL ALL)
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
@@ -78,14 +78,14 @@ jobs:
           echo "Updating feeds..."
           ./scripts/feeds update -a
           
-          echo "Installing package dependencies..."
-          ./scripts/feeds install -a -p packages
+          echo "Installing ONLY required dependencies..."
+          # HANYA install package yang diperlukan untuk spotifyd
           ./scripts/feeds install rust
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
           
-          echo "Package dependencies installed"
+          echo "Required dependencies installed"
 
       - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
@@ -97,7 +97,7 @@ jobs:
           echo "Setting up local feed..."
           echo "src-link local $GITHUB_WORKSPACE/main-repo/package" >> feeds.conf.default
           ./scripts/feeds update local
-          ./scripts/feeds install -a -p local
+          ./scripts/feeds install -p local spotifyd-ng
           
           echo "Local feed setup completed"
 
@@ -113,18 +113,19 @@ jobs:
           make defconfig
           
           echo "Step 2: Enable required packages"
-          # Hanya enable packages yang tersedia
+          # Enable packages yang diperlukan
           echo "CONFIG_PACKAGE_rust=y" >> .config
           echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
           echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
           echo "CONFIG_PACKAGE_libpthread=y" >> .config
+          echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
           
           echo "Step 3: Finalize configuration"
           make defconfig
           
           echo "Step 4: Verify configuration"
           echo "=== CONFIG STATUS ==="
-          REQUIRED_PACKAGES="rust alsa-lib libstdcpp libpthread"
+          REQUIRED_PACKAGES="rust alsa-lib libstdcpp libpthread spotifyd-ng"
           
           for pkg in $REQUIRED_PACKAGES; do
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
@@ -138,17 +139,17 @@ jobs:
           
           echo "✅ All packages configured successfully"
 
-      - name: Build spotifyd-ng package
+      - name: Build ONLY spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "=== BUILDING SPOTIFYD-NG ==="
+          echo "=== BUILDING ONLY SPOTIFYD-NG ==="
           echo "Starting build process..."
           
-          # Build dengan output verbose
+          # Build HANYA spotifyd-ng, bukan semua package
           make package/feeds/local/spotifyd-ng/compile V=s
 
       - name: Collect artifacts
