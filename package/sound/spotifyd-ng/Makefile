@@ -24,8 +24,8 @@ define Package/spotifyd-ng/description
   A spotify playing daemon.
 endef
 
+# Non-interactive build
 define Build/Configure
-	# Patch untuk librespot
 	$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml
 	echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml

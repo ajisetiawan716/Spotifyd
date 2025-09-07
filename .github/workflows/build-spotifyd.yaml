@@ -23,6 +23,11 @@ jobs:
             pretty: mediatek-filogic  
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
+    env:
+      TERM: dumb  # Non-interactive terminal
+      DEBIAN_FRONTEND: noninteractive
+      KCONFIG_NONINTERACTIVE: 1  # Non-interactive kernel config
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,21 +44,41 @@ jobs:
           tar -xf sdk.tar.xz
           echo "SDK_DIR=$(echo openwrt-sdk-*)" >> $GITHUB_ENV
 
-      - name: Setup feeds and build spotifyd
+      - name: Setup feeds non-interactive
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          # Setup environment untuk non-interactive
+          export TERM=dumb
+          export DEBIAN_FRONTEND=noninteractive
+          export KCONFIG_NONINTERACTIVE=1
+          
           # Update feeds
           ./scripts/feeds update packages
           
-          # Install rust dan dependencies
+          # Install dependencies
           ./scripts/feeds install rust alsa-lib libstdcpp libpthread
           
           # Add local feed
           echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
           ./scripts/feeds update local
           ./scripts/feeds install spotifyd-ng
+
+      - name: Build with defconfig (non-interactive)
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          # Set environment untuk non-interactive
+          export TERM=dumb
+          export KCONFIG_NONINTERACTIVE=1
           
-          # Build
+          # Gunakan defconfig untuk menghindari menuconfig
+          make defconfig
+          
+          # Pastikan Rust terpilih
+          echo "CONFIG_PACKAGE_RUST=y" >> .config
+          echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
+          make defconfig
+          
+          # Build package
           make package/spotifyd-ng/compile V=s
 
       - name: Collect artifacts
