@@ -1,96 +1,25 @@
-name: build-spotifyd-direct
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main ]
-
-jobs:
-  build:
-    name: build (${{ matrix.target }})
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        include:
-          - target: x86_64
-            rust_target: x86_64-unknown-linux-musl
-            cross_toolchain: gcc-x86-64-linux-gnu
-            linker: x86_64-linux-musl-gcc
-          - target: aarch64
-            rust_target: aarch64-unknown-linux-musl
-            cross_toolchain: gcc-aarch64-linux-gnu
-            linker: aarch64-linux-gnu-gcc
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            git curl ca-certificates \
-            ${{ matrix.cross_toolchain }} \
-            musl-tools
-
-      - name: Install Rust and setup target
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup target add ${{ matrix.rust_target }}
-          
-          # Setup cargo config
-          mkdir -p $HOME/.cargo
-          echo "[target.${{ matrix.rust_target }}]" > $HOME/.cargo/config.toml
-          echo "linker = \"${{ matrix.linker }}\"" >> $HOME/.cargo/config.toml
-
-      - name: Build spotifyd
-        run: |
-          git clone https://github.com/Spotifyd/spotifyd.git spotifyd-source
-          cd spotifyd-source
-          git checkout v0.4.1
-          
-          echo '[patch.crates-io]' >> Cargo.toml
-          echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
-          
-          # Set environment variables
-          if [ "${{ matrix.target }}" = "aarch64" ]; then
-            export CC_aarch64_unknown_linux_musl="aarch64-linux-gnu-gcc"
-            export AR_aarch64_unknown_linux_musl="aarch64-linux-gnu-ar"
-          else
-            export CC_x86_64_unknown_linux_musl="x86_64-linux-musl-gcc"
-            export AR_x86_64_unknown_linux_musl="x86_64-linux-musl-ar"
-          fi
-          
-          cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
-          
-          mkdir -p "$GITHUB_WORKSPACE/binaries"
-          cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
-
-      - name: Create IPK package
-        run: |
-          mkdir -p ipk/usr/bin ipk/CONTROL
-          cp "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}" ipk/usr/bin/spotifyd
-          chmod +x ipk/usr/bin/spotifyd
-          
-          echo "Package: spotifyd-ng" > ipk/CONTROL/control
-          echo "Version: 0.4.1-1" >> ipk/CONTROL/control
-          echo "Depends: libstdcpp, libpthread, alsa-lib" >> ipk/CONTROL/control
-          echo "Architecture: ${{ matrix.target }}" >> ipk/CONTROL/control
-          echo "Description: Spotify daemon" >> ipk/CONTROL/control
-          
-          cd ipk
-          tar -czf ../data.tar.gz ./
-          cd CONTROL
-          tar -czf ../control.tar.gz ./
-          cd ..
-          echo "2.0" > debian-binary
-          mkdir -p "$GITHUB_WORKSPACE/out"
-          tar -czf "$GITHUB_WORKSPACE/out/spotifyd-ng_0.4.1-1_${{ matrix.target }}.ipk" debian-binary control.tar.gz data.tar.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: spotifyd-ipks
-          path: out/
+- name: Build with cross Docker (non-interactive)
+  env:
+    DEBIAN_FRONTEND: noninteractive
+    TZ: UTC
+  run: |
+    # Set environment untuk non-interactive
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=UTC
+    
+    # Install cross
+    cargo install cross --git https://github.com/cross-rs/cross
+    
+    # Build dengan environment variables
+    git clone https://github.com/Spotifyd/spotifyd.git spotifyd-source
+    cd spotifyd-source
+    git checkout v0.4.1
+    
+    echo '[patch.crates-io]' >> Cargo.toml
+    echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
+    
+    # Build dengan cross
+    cross build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
+    
+    mkdir -p "$GITHUB_WORKSPACE/binaries"
+    cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
