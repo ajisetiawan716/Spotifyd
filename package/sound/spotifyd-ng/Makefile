@@ -13,11 +13,18 @@ PKG_BUILD_DEPENDS:=rust/host
 
 include $(INCLUDE_DIR)/package.mk
 
+# Check if Rust is available with better error handling
+define CheckRust
 ifeq ($(CONFIG_PACKAGE_RUST),y)
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 else
-$(error Rust package is required but not selected)
+$(info WARNING: Rust package is not selected in config)
+$(info Please enable CONFIG_PACKAGE_RUST in menuconfig: Languages -> Rust)
+$(error Build cannot continue without Rust)
 endif
+endef
+
+$(eval $(call CheckRust))
 
 define Package/spotifyd-ng
   SECTION:=sound
@@ -32,6 +39,7 @@ define Package/spotifyd-ng/description
 endef
 
 define Build/Configure
+	# Apply librespot patch
 	$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml
 	echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
@@ -46,6 +54,7 @@ define Package/spotifyd-ng/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/release/spotifyd $(1)/usr/bin/
 endef
 
+# Build only with ALSA backend
 CARGO_ARGS += --no-default-features --features alsa_backend
 
 $(eval $(call BuildPackage,spotifyd-ng))

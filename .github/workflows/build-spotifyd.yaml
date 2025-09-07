@@ -92,20 +92,30 @@ jobs:
           ./scripts/feeds update local
           ./scripts/feeds install -a -p local
 
-      - name: Configure SDK
+      - name: Configure SDK dengan benar
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          # Buat defconfig pertama
           make defconfig
-          echo "CONFIG_PACKAGE_RUST=y" >> .config
+          
+          # Pastikan Rust terpilih - gunakan sed untuk modify config
+          sed -i 's/# CONFIG_PACKAGE_RUST is not set/CONFIG_PACKAGE_RUST=y/' .config
           echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
           echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
           echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
           echo "CONFIG_PACKAGE_libpthread=y" >> .config
+          
+          # Update config
           make defconfig
+          
+          # Verifikasi Rust benar-benar terpilih
+          echo "=== CONFIG STATUS ==="
+          grep "CONFIG_PACKAGE_RUST" .config
+          grep "CONFIG_PACKAGE_spotifyd-ng" .config
 
       - name: Build spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
@@ -138,9 +148,7 @@ jobs:
         run: |
           echo "=== DEBUG INFO ==="
           echo "Current directory: $(pwd)"
-          echo "Directory structure:"
-          ls -la
+          echo "Config status:"
+          grep "CONFIG_PACKAGE_RUST\|CONFIG_PACKAGE_spotifyd-ng" .config 2>/dev/null || echo "No config found"
           echo "Feeds local:"
-          ls -la feeds/local/ || true
-          echo "Config:"
-          cat .config 2>/dev/null || echo "No config"
+          ls -la feeds/local/ 2>/dev/null || echo "No local feeds"
