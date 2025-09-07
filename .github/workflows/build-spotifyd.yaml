@@ -19,10 +19,12 @@ jobs:
         include:
           - target: x86_64
             arch: x86_64
-            toolchain: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86_64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-          - target: aarch64
-            arch: aarch64
-            toolchain: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            toolchain_url: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            toolchain_dir: toolchain-x86_64_gcc-12.3.0_musl
+          - target: aarch64_cortex-a53
+            arch: aarch64_cortex-a53
+            toolchain_url: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            toolchain_dir: toolchain-aarch64_cortex-a53_gcc-12.3.0_musl
 
     steps:
       - name: Checkout spotifyd source
@@ -65,27 +67,62 @@ jobs:
         run: |
           set -eux
           echo "Downloading toolchain for ${{ matrix.target }}..."
-          curl -fsSL "${{ matrix.toolchain }}" -o toolchain.tar.xz
-          mkdir -p /opt/openwrt-toolchain
-          tar -xf toolchain.tar.xz --strip-components=1 -C /opt/openwrt-toolchain \
-            --wildcards '*/staging_dir/toolchain-*'
+          echo "URL: ${{ matrix.toolchain_url }}"
           
-          export TOOLCHAIN_DIR="/opt/openwrt-toolchain"
+          # Download toolchain
+          curl -fsSL "${{ matrix.toolchain_url }}" -o toolchain.tar.xz
+          
+          # Extract entire SDK first to see structure
+          mkdir -p /tmp/sdk-extract
+          tar -xf toolchain.tar.xz -C /tmp/sdk-extract
+          
+          # Find the actual toolchain directory
+          SDK_DIR=$(find /tmp/sdk-extract -name "openwrt-sdk-*" -type d | head -1)
+          if [ -z "$SDK_DIR" ]; then
+            echo "❌ Could not find SDK directory"
+            ls -la /tmp/sdk-extract/
+            exit 1
+          fi
+          
+          echo "SDK found at: $SDK_DIR"
+          
+          # Set toolchain directory
+          export TOOLCHAIN_DIR="$SDK_DIR/staging_dir/${{ matrix.toolchain_dir }}"
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
+          ls -la "$TOOLCHAIN_DIR/bin/" || echo "Toolchain bin not found, checking alternative locations..."
+          
+          # Check alternative paths
+          find "$SDK_DIR/staging_dir" -name "*gcc" -type f | head -5 || echo "No compiler found"
 
       - name: Setup cross-compilation environment
         run: |
           set -eux
           
+          echo "Setting up cross-compilation for ${{ matrix.target }}"
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
+          
+          # Find the actual compiler paths
+          CC=$(find "$TOOLCHAIN_DIR/bin" -name "*-gcc" | head -1)
+          AR=$(find "$TOOLCHAIN_DIR/bin" -name "*-ar" | head -1)
+          STRIP=$(find "$TOOLCHAIN_DIR/bin" -name "*-strip" | head -1)
+          
+          if [ -z "$CC" ] || [ -z "$AR" ]; then
+            echo "❌ Could not find compiler tools"
+            echo "Looking in: $TOOLCHAIN_DIR/bin/"
+            ls -la "$TOOLCHAIN_DIR/bin/" || echo "Directory not found"
+            exit 1
+          fi
+          
+          echo "Found CC: $CC"
+          echo "Found AR: $AR"
+          echo "Found STRIP: $STRIP"
+          
           if [ "${{ matrix.target }}" = "x86_64" ]; then
-            export CC="$TOOLCHAIN_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
-            export AR="$TOOLCHAIN_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
-            export STRIP="$TOOLCHAIN_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-strip"
             export CARGO_TARGET=x86_64-unknown-linux-musl
           else
-            export CC="$TOOLCHAIN_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-gcc"
-            export AR="$TOOLCHAIN_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-ar"
-            export STRIP="$TOOLCHAIN_DIR/toolchain-aarch64_cortex-a53_gcc-12.3.0_musl/bin/aarch64-openwrt-linux-strip"
             export CARGO_TARGET=aarch64-unknown-linux-musl
           fi
           
@@ -100,6 +137,11 @@ jobs:
         run: |
           set -eux
           cd spotifyd-src
+          
+          echo "Building with:"
+          echo "CC: $CC"
+          echo "AR: $AR"
+          echo "Target: $CARGO_TARGET"
           
           # Build dengan cross-compilation
           CARGO_HOME="$HOME/.cargo" \
@@ -163,4 +205,4 @@ jobs:
           echo "Binary info:"
           file spotifyd-src/target/$CARGO_TARGET/release/spotifyd
           echo "Package contents:"
-          tar -ztvf output/${{ matrix.target }}/*.ipk
+          tar -ztvf output/${{ matrix.target }}/*.ipk || echo "Package not found"
