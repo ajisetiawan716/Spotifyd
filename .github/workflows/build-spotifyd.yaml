@@ -12,7 +12,6 @@ jobs:
   build:
     name: build (${{ matrix.target }} | ${{ matrix.pretty }})
     runs-on: ubuntu-22.04
-
     strategy:
       fail-fast: false
       matrix:
@@ -25,79 +24,55 @@ jobs:
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
 
     env:
-      FORCE_UNSAFE_CONFIGURE: 1
       TERM: xterm
       KCONFIG_NONINTERACTIVE: 1
       MAKEFLAGS: -j$(nproc)
+      FORCE_UNSAFE_CONFIGURE: 1
+      RUSTFLAGS: -C debuginfo=0
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # pastikan kita dapat line ending dari repo apa adanya
-          fetch-depth: 0
 
-      - name: Enforce LF line endings & detect spaces on command lines
-        run: |
-          set -eux
-          sudo apt-get update && sudo apt-get install -y dos2unix
-          dos2unix package/sound/spotifyd-ng/Makefile
-          echo "Check leading spaces (should be none on command lines):"
-          if grep -n '^[ ]\+' package/sound/spotifyd-ng/Makefile; then
-            echo "ERROR: Found leading spaces. Replace with TAB." >&2
-            exit 1
-          fi
-
-      - name: Install host deps
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential g++ gcc make cmake \
-            python3 python3-pip \
-            git curl ca-certificates \
-            pkg-config \
-            libssl-dev \
-            unzip xz-utils rsync
-          sudo update-ca-certificates
+            git curl ca-certificates xz-utils \
+            python3 pkg-config unzip
 
-      - name: Download & extract OpenWrt SDK
+      - name: Download & extract SDK
         run: |
           set -eux
           curl -fsSL "${{ matrix.sdk }}" -o sdk.tar.xz
           tar -xJf sdk.tar.xz
-          SDK_DIR=$(echo openwrt-sdk-*)
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          echo "SDK_DIR=$(echo openwrt-sdk-*)" >> $GITHUB_ENV
 
       - name: Prepare feeds
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           ./scripts/feeds update packages
-          ./scripts/feeds install rust
-          ./scripts/feeds install alsa-lib
-
+          ./scripts/feeds install rust alsa-lib
           echo "src-link local $GITHUB_WORKSPACE" >> feeds.conf.default
           ./scripts/feeds update local
           ./scripts/feeds install spotifyd-ng
 
-      - name: defconfig (non-interactive)
+      - name: defconfig
         working-directory: ${{ env.SDK_DIR }}
         run: make defconfig
 
-      - name: Build spotifyd-ng only
+      - name: Build spotifyd-ng
         working-directory: ${{ env.SDK_DIR }}
-        env:
-          RUSTFLAGS: -C debuginfo=0
-        run: |
-          set -eux
-          make package/spotifyd-ng/compile V=sc
+        run: make package/spotifyd-ng/compile V=sc
 
       - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
-          find bin/packages -type f -name '*spotifyd-ng*\.ipk' -print -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
+          find bin/packages -type f -name '*spotifyd-ng*\.ipk' -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

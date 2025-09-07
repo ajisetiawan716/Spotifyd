@@ -6,8 +6,7 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
-# Full SHA untuk tag v0.4.1
-PKG_SOURCE_VERSION:=8777c67988508d3623d3f6b81c9379fb071ac7dd
+PKG_SOURCE_VERSION:=v0.4.1
 PKG_MIRROR_HASH:=skip
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
@@ -19,25 +18,25 @@ include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 
 define Package/spotifyd-ng
-  SECTION:=sound
-  CATEGORY:=Sound
-  TITLE:=Spotify daemon (spotifyd) for OpenWrt
-  URL:=https://github.com/Spotifyd/spotifyd
-  DEPENDS:=+libstdcpp +libpthread +alsa-lib
+SECTION:=sound
+CATEGORY:=Sound
+TITLE:=Spotify daemon (spotifyd) for OpenWrt
+URL:=https://github.com/Spotifyd/spotifyd
+DEPENDS:=+libstdcpp +libpthread +alsa-lib
 endef
 
 define Package/spotifyd-ng/description
- Spotifyd headless Spotify client (daemon).
+Spotifyd headless Spotify client (daemon).
 endef
 
-# --- OPSIONAL: pin librespot. Hapus block ini jika tidak diperlukan. ---
+# Tambah patch ke librespot agar menghindari bug playback
 define Build/Configure
-	# Tambah patch section ke Cargo.toml
+	# tambahkan patch ke Cargo.toml
 	echo "" >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo "[patch.crates-io]" >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
 
-	# Set toolchain cargo target
+	# set toolchain cargo target dari SDK
 	mkdir -p $(PKG_BUILD_DIR)/.cargo
 ifneq (,$(findstring x86_64,$(ARCH)))
 	echo '[target.x86_64-unknown-linux-musl]' >  $(PKG_BUILD_DIR)/.cargo/config.toml
@@ -49,9 +48,8 @@ else
 	echo 'ar = "aarch64-openwrt-linux-musl-gcc-ar"'  >> $(PKG_BUILD_DIR)/.cargo/config.toml
 endif
 endef
-# --- /OPSIONAL ---
 
-# Gunakan backend ALSA saja
+# Build cuma backend ALSA
 CARGO_ARGS += --no-default-features --features alsa_backend
 
 define Build/Compile
