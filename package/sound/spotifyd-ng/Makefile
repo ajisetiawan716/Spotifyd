@@ -9,7 +9,7 @@ PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
 PKG_SOURCE_VERSION:=v0.4.1
 PKG_MIRROR_HASH:=skip
 
-PKG_BUILD_DEPENDS:=rust/host
+#PKG_BUILD_DEPENDS:=rust/host
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cargo.mk
