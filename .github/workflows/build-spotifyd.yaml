@@ -148,7 +148,7 @@ jobs:
           
           # Force disable rust untuk menghindari build dari feeds
           sed -i '/CONFIG_PACKAGE_rust/d' .config 2>/dev/null || true
-          echo "CONFIG_PACKAGE_rust=n" >> .config
+          echo "# CONFIG_PACKAGE_rust is not set" >> .config
           
           echo "Step 3: Finalize configuration"
           make defconfig
@@ -165,13 +165,14 @@ jobs:
             fi
           done
           
-          # Pastikan rust disabled
-          if ! grep -q "CONFIG_PACKAGE_rust=n" .config; then
+          # Pastikan rust disabled - LOGIKA YANG DIPERBAIKI
+          if grep -q "CONFIG_PACKAGE_rust=y" .config; then
             echo "❌ rust: SHOULD BE DISABLED BUT IS ENABLED"
-            echo "Current value: $(grep CONFIG_PACKAGE_rust .config 2>/dev/null || echo 'NOT FOUND')"
+            echo "Current value: $(grep CONFIG_PACKAGE_rust .config)"
             exit 1
           else
             echo "✅ rust: DISABLED (correct)"
+            echo "Current value: $(grep CONFIG_PACKAGE_rust .config 2>/dev/null || echo 'NOT SET')"
           fi
           
           echo "✅ All packages configured successfully"
