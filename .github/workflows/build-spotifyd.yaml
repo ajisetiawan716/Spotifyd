@@ -124,63 +124,79 @@ jobs:
           ./scripts/feeds list | grep spotifyd || echo "spotifyd-ng not found in feeds list"
           echo "Local feed setup completed"
 
-      - name: Configure SDK untuk custom package
+      - name: Build Rust package manually pertama
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "=== CONFIGURATION DEBUG ==="
-          echo "Step 1: Initial configuration"
+          echo "=== BUILDING RUST PACKAGE FIRST ==="
+          echo "Building Rust package manually..."
+          make package/feeds/packages/rust/compile V=s 2>&1 | head -30 || echo "Rust build may have issues but continuing..."
+          
+          echo "Building Rust host tools..."
+          make package/feeds/packages/rust-host/compile V=s 2>&1 | head -30 || echo "Rust-host build may have issues but continuing..."
+          
+          echo "Rust build attempted"
+
+      - name: Configure SDK dengan force enable Rust
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          export TERM=dumb
+          export KCONFIG_NONINTERACTIVE=1
+          
+          echo "=== AGGRESSIVE RUST CONFIGURATION ==="
+          echo "Step 1: Initial defconfig"
           make defconfig
           
-          echo "Step 2: Verify .config exists"
-          if [ ! -f .config ]; then
-            echo "ERROR: .config file not found after defconfig!"
-            echo "Directory contents:"
-            ls -la
+          echo "Step 2: Check current Rust config status"
+          echo "Rust config before: $(grep 'CONFIG_PACKAGE_rust' .config 2>/dev/null || echo 'NOT FOUND')"
+          
+          echo "Step 3: Force enable ALL required packages"
+          # Hapus config lama jika ada
+          sed -i '/CONFIG_PACKAGE_rust/d' .config 2>/dev/null || true
+          sed -i '/CONFIG_PACKAGE_alsa-lib/d' .config 2>/dev/null || true
+          sed -i '/CONFIG_PACKAGE_libstdcpp/d' .config 2>/dev/null || true
+          sed -i '/CONFIG_PACKAGE_libpthread/d' .config 2>/dev/null || true
+          
+          # Force enable packages
+          echo "CONFIG_PACKAGE_rust=y" >> .config
+          echo "CONFIG_PACKAGE_rust-host=y" >> .config
+          echo "CONFIG_PACKAGE_alsa-lib=y" >> .config
+          echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
+          echo "CONFIG_PACKAGE_libpthread=y" >> .config
+          
+          echo "Step 4: Final defconfig"
+          make defconfig
+          
+          echo "Step 5: Verify ALL packages are enabled"
+          echo "=== FINAL CONFIG VERIFICATION ==="
+          REQUIRED_PACKAGES="rust rust-host alsa-lib libstdcpp libpthread"
+          ALL_ENABLED=true
+          
+          for pkg in $REQUIRED_PACKAGES; do
+            if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+              echo "✅ CONFIG_PACKAGE_${pkg}=y"
+            else
+              echo "❌ CONFIG_PACKAGE_${pkg} NOT ENABLED!"
+              echo "Current value: $(grep CONFIG_PACKAGE_${pkg} .config 2>/dev/null || echo 'NOT FOUND')"
+              ALL_ENABLED=false
+            fi
+          done
+          
+          if [ "$ALL_ENABLED" = false ]; then
+            echo "ERROR: Not all required packages are enabled!"
+            echo "Dumping .config content:"
+            cat .config
             exit 1
           fi
           
-          echo "Initial .config size: $(wc -l < .config) lines"
-          echo "First 5 lines of .config:"
-          head -5 .config
-          
-          echo "Step 3: Enable standard dependencies"
-          STANDARD_DEPS="rust alsa-lib libstdcpp libpthread"
-          
-          for pkg in $STANDARD_DEPS; do
-            echo "Processing package: $pkg"
-            if grep -q "# CONFIG_PACKAGE_${pkg} is not set" .config; then
-              sed -i "s/# CONFIG_PACKAGE_${pkg} is not set/CONFIG_PACKAGE_${pkg}=y/" .config
-              echo "✅ Enabled $pkg via sed"
-            elif grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-              echo "ℹ️ $pkg already enabled"
-            else
-              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
-              echo "✅ Added $pkg to config"
-            fi
-          done
-          
-          echo "Step 4: Finalize configuration"
-          make defconfig
-          
-          echo "Step 5: Verify dependencies"
-          echo "=== FINAL CONFIG STATUS ==="
-          echo ".config size: $(wc -l < .config) lines"
-          
-          for pkg in $STANDARD_DEPS; do
-            if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-              echo "✅ $pkg: ENABLED"
-            else
-              echo "❌ $pkg: MISSING - $(grep CONFIG_PACKAGE_${pkg} .config || echo 'NOT FOUND')"
-              exit 1
-            fi
-          done
-          
-          echo "✅ All dependencies enabled successfully"
-          echo "ℹ️ Custom package spotifyd-ng will be built automatically from local feed"
+          echo "✅ All required packages successfully enabled"
+          echo "Rust config details:"
+          grep "CONFIG_PACKAGE_rust" .config
+          grep "CONFIG_RUST" .config 2>/dev/null || echo "No additional Rust config found"
 
       - name: Build spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
@@ -189,7 +205,7 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "=== BUILD DEBUG ==="
+          echo "=== BUILDING SPOTIFYD-NG PACKAGE ==="
           echo "Building spotifyd-ng from local feed..."
           echo "Current directory: $(pwd)"
           echo "Local feed contents:"
@@ -205,17 +221,11 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
-          echo "=== ARTIFACTS COLLECTION DEBUG ==="
+          echo "=== ARTIFACTS COLLECTION ==="
           echo "Collecting build artifacts..."
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
           
-          echo "Searching for IPK files in bin directory:"
-          find bin -name "*.ipk" | head -5 || echo "No IPK files found in bin"
-          
-          echo "Searching for spotifyd IPK files:"
-          find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          
-          echo "Searching in all directories:"
+          echo "Searching for IPK files:"
           find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
           
           echo "Artifacts collected:"
@@ -245,30 +255,26 @@ jobs:
           ls -la feeds/ 2>/dev/null || echo "No feeds directory"
           echo "--- feeds/local/ ---"
           ls -la feeds/local/ 2>/dev/null || echo "No local feeds"
-          echo "--- package/ ---"
-          ls -la package/ 2>/dev/null || echo "No package directory"
           
           echo "=== CONFIG FILES ==="
           echo "--- .config ---"
-          cat .config 2>/dev/null | head -20 || echo "No .config file"
-          echo "--- feeds.conf.default ---"
-          cat feeds.conf.default 2>/dev/null || echo "No feeds.conf.default"
+          cat .config 2>/dev/null | head -50 || echo "No .config file"
+          echo "--- Rust config ---"
+          grep "rust" .config 2>/dev/null || echo "No rust config"
           
           echo "=== PACKAGE INFO ==="
           echo "--- spotifyd-ng package ---"
           find . -name "*spotifyd*" -type f 2>/dev/null || echo "No spotifyd files found"
-          echo "--- Makefile contents ---"
-          find feeds/local/ -name "Makefile" -exec cat {} \; 2>/dev/null || echo "No Makefile found"
           
           echo "=== RUST PACKAGE STATUS ==="
           echo "--- Rust in feeds ---"
           find feeds/packages/lang/rust -name "*" 2>/dev/null || echo "Rust package not found"
-          echo "--- Rust config ---"
-          grep "CONFIG_PACKAGE_rust" .config 2>/dev/null || echo "Rust config not found"
+          echo "--- Rust build status ---"
+          find build_dir/ -name "*rust*" -type d 2>/dev/null || echo "No rust build directories"
           
           echo "=== BUILD LOGS ==="
-          echo "--- Recent files in build_dir ---"
-          find build_dir/ -name "*.log" -exec tail -5 {} \; 2>/dev/null || echo "No build logs found"
+          echo "--- Recent error logs ---"
+          find . -name "*.log" -exec grep -l "error\|fail" {} \; 2>/dev/null | head -3 | xargs tail -20 2>/dev/null || echo "No error logs found"
           
           echo "=== SYSTEM INFO ==="
           echo "Disk space:"
