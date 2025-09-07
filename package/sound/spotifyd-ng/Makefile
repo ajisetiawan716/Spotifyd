@@ -13,19 +13,24 @@ PKG_BUILD_DEPENDS:=rust/host
 
 include $(INCLUDE_DIR)/package.mk
 
-# Check if Rust is available with better error handling
+# Better Rust detection with debug info
+define CheckRust
 ifeq ($(CONFIG_PACKAGE_RUST),y)
+$(info ✅ Rust package enabled in config)
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
 else
-$(info === RUST PACKAGE CONFIGURATION ERROR ===)
-$(info Current CONFIG_PACKAGE_RUST value: $(CONFIG_PACKAGE_RUST))
-$(info Please enable Rust package in OpenWrt configuration:)
-$(info 1. Run 'make menuconfig' in SDK directory)
-$(info 2. Navigate to 'Languages' -> 'Rust')
-$(info 3. Select 'Rust' and save configuration)
-$(info 4. Run 'make defconfig' to update configuration)
-$(error Build cannot continue without Rust package)
+$(info === RUST CONFIGURATION DEBUG ===)
+$(info CONFIG_PACKAGE_RUST value: $(CONFIG_PACKAGE_RUST))
+$(info Checking Rust package availability...)
+$(info Please ensure:)
+$(info 1. Rust package is installed in feeds: ./scripts/feeds install rust)
+$(info 2. Rust is enabled in config: CONFIG_PACKAGE_rust=y)
+$(info 3. Run 'make defconfig' after enabling Rust)
+$(error Build cannot continue - Rust package not properly configured)
 endif
+endef
+
+$(eval $(call CheckRust))
 
 define Package/spotifyd-ng
   SECTION:=sound
@@ -55,7 +60,6 @@ define Package/spotifyd-ng/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/release/spotifyd $(1)/usr/bin/
 endef
 
-# Build only with ALSA backend
 CARGO_ARGS += --no-default-features --features alsa_backend
 
 $(eval $(call BuildPackage,spotifyd-ng))
