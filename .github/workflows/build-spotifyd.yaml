@@ -1,116 +1,102 @@
-name: Build spotifyd-ng (OpenWrt SDK)
+name: build-spotifyd
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch: {}
+    paths:
+      - 'package/**'
+      - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
   build:
+    name: build (${{ matrix.target }}, ${{ matrix.target_dir }}, ${{ matrix.pretty }})
     runs-on: ubuntu-22.04
-    env:
-      TERM: xterm
-      KCONFIG_NONINTERACTIVE: 1
-      MAKEFLAGS: -j$(nproc)
 
     strategy:
       fail-fast: false
       matrix:
-        sdk:
-          - name: x86_64
-            url: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            rust_target: x86_64-unknown-linux-musl
-          - name: aarch64_generic
-            url: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            rust_target: aarch64-unknown-linux-musl
+        include:
+          - target: x86_64
+            target_dir: x86/64
+            pretty: x86-64
+            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - target: aarch64_generic
+            target_dir: mediatek/filogic
+            pretty: mediatek-filogic
+            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+
+    env:
+      FORCE_UNSAFE_CONFIGURE: 1
+      TERM: xterm
+      KCONFIG_NONINTERACTIVE: 1
+      MAKEFLAGS: -j$(nproc)
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install host deps + rustup
+      - name: Install host deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential make python3 pkg-config git wget xz-utils rsync ca-certificates curl
+          sudo apt-get install -y --no-install-recommends \
+            build-essential g++ gcc make cmake \
+            python3 python3-pip \
+            git curl ca-certificates \
+            pkg-config \
+            libssl-dev \
+            unzip xz-utils rsync
           sudo update-ca-certificates
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-          rustc -V && cargo -V
 
-      - name: Download & extract SDK
+      - name: Download & extract OpenWrt SDK
         run: |
-          wget -q "${{ matrix.sdk.url }}" -O sdk.tar.xz
-          tar xf sdk.tar.xz
-          echo SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') >> $GITHUB_ENV
-          echo "SDK=$SDK_DIR"
+          set -eux
+          curl -fsSL "${{ matrix.sdk }}" -o sdk.tar.xz
+          tar -xJf sdk.tar.xz
+          SDK_DIR=$(echo openwrt-sdk-*)
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
 
-      - name: Feeds (minimal)
+      - name: Prepare feeds (only what we need)
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install alsa-lib openssl
+          set -eux
+          # Pastikan ada feed packages (butuh lang/rust/cargo.mk)
+          ./scripts/feeds update packages
+          ./scripts/feeds install rust
+          ./scripts/feeds install alsa-lib
 
-      - name: Copy package into SDK
+          # Tambah feed lokal (paket spotifyd-ng) dari repo ini
+          echo "src-link local $GITHUB_WORKSPACE" >> feeds.conf.default
+          ./scripts/feeds update local
+          ./scripts/feeds install spotifyd-ng
+
+      - name: Minimal config (non-interactive)
+        working-directory: ${{ env.SDK_DIR }}
         run: |
-          mkdir -p "${{ env.SDK_DIR }}/package/sound"
-          rsync -a package/sound/spotifyd-ng "${{ env.SDK_DIR }}/package/sound/"
+          set -eux
+          # Generate config default tanpa menuconfig
+          make defconfig
 
-      - name: Cache OpenWrt dl/
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SDK_DIR }}/dl
-          key: dl-${{ matrix.sdk.name }}-23055
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ matrix.sdk.rust_target }}-${{ hashFiles('package/sound/spotifyd-ng/**') }}
-
-      - name: Build spotifyd (download → prepare → compile)
-        shell: bash
+      - name: Build spotifyd-ng only
         working-directory: ${{ env.SDK_DIR }}
         env:
-          FORCE_UNSAFE_CONFIGURE: 1
-          CARGO_HOME: ~/.cargo
           RUSTFLAGS: -C debuginfo=0
         run: |
-          # PATH (tambahkan host tools SDK)
-          export PATH="$HOME/.cargo/bin:${{ env.SDK_DIR }}/staging_dir/host/bin:$PATH"
-
-          # Non-interactive config
-          make defconfig || make olddefconfig
-
-          # 1) download
-          make package/spotifyd-ng/download V=sc
-
-          # 2) prepare
-          make package/spotifyd-ng/prepare V=sc
-
-          # 2.5) cek folder build yang di-unpack
-          PKGDIR="$(find build_dir -maxdepth 2 -type d -name 'spotifyd-ng-*' | head -n1)"
-          if [ -z "$PKGDIR" ]; then
-            echo "PKG_BUILD_DIR missing after prepare"
-            find build_dir -maxdepth 3 -type d -print || true
-            exit 1
-          fi
-          echo "PKG_BUILD_DIR: $PKGDIR"
-          [ -f "$PKGDIR/.cargo/config.toml" ] && { echo "=== .cargo/config.toml ==="; cat "$PKGDIR/.cargo/config.toml"; } || true
-
-          # 3) compile paket (akan memanggil cargo build --release di Build/Compile)
+          set -eux
+          # Kompilasi hanya paket kita (host Rust akan dibangun otomatis)
           make package/spotifyd-ng/compile V=sc
 
-          # Kumpulkan ipk
-          mkdir -p ../out/${{ matrix.sdk.name }}
-          find bin -name "*spotifyd-ng*_*.ipk" -exec cp {} ../out/${{ matrix.sdk.name }}/ \; || true
-          ls -la ../out/${{ matrix.sdk.name }} || true
+      - name: Collect artifacts
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
+          # IPK biasanya di bawah bin/packages/<arch>/<feed>/
+          find bin/packages -type f -name '*spotifyd-ng*\.ipk' -print -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
 
-      - name: Upload artifacts
+      - name: Upload artifacts (${{ matrix.target }})
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt_${{ matrix.sdk.name }}_ipk
-          path: out/${{ matrix.sdk.name }}/
+          name: openwrt_${{ matrix.target }}_ipk
+          path: out/${{ matrix.target }}/
           if-no-files-found: error
