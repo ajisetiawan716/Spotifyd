@@ -44,7 +44,7 @@ jobs:
             git curl ca-certificates xz-utils \
             python3 pkg-config unzip
 
-      - name: Install Rust (untuk persiapan)
+      - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
@@ -60,12 +60,17 @@ jobs:
       - name: Setup environment variables
         run: |
           echo "PATH=${{ env.STAGING_DIR }}/toolchain/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-gcc'; else echo 'aarch64-openwrt-linux-musl-gcc'; fi)" >> $GITHUB_ENV
-          echo "CXX=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-g++'; else echo 'aarch64-openwrt-linux-musl-g++'; fi)" >> $GITHUB_ENV
-          echo "AR=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-ar'; else echo 'aarch64-openwrt-linux-musl-ar'; fi)" >> $GITHUB_ENV
-          echo "STRIP=${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-strip'; else echo 'aarch64-openwrt-linux-musl-strip'; fi)" >> $GITHUB_ENV
+          if [ "${{ matrix.target }}" = "x86_64" ]; then
+            echo "CC=${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-gcc" >> $GITHUB_ENV
+            echo "CXX=${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-g++" >> $GITHUB_ENV
+            echo "AR=${{ env.STAGING_DIR }}/toolchain/bin/x86_64-openwrt-linux-musl-ar" >> $GITHUB_ENV
+          else
+            echo "CC=${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-gcc" >> $GITHUB_ENV
+            echo "CXX=${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-g++" >> $GITHUB_ENV
+            echo "AR=${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-ar" >> $GITHUB_ENV
+          fi
 
-      - name: Build spotifyd menggunakan cargo langsung
+      - name: Build spotifyd dengan toolchain OpenWrt
         run: |
           set -eux
           git clone https://github.com/Spotifyd/spotifyd.git spotifyd-source
@@ -76,7 +81,7 @@ jobs:
           echo '[patch.crates-io]' >> Cargo.toml
           echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
           
-          # Setup cargo config untuk menggunakan toolchain OpenWrt
+          # Setup cargo config berdasarkan target
           mkdir -p .cargo
           if [ "${{ matrix.target }}" = "x86_64" ]; then
             cat > .cargo/config.toml << 'EOF'
@@ -92,44 +97,32 @@ ar = "${{ env.STAGING_DIR }}/toolchain/bin/aarch64-openwrt-linux-musl-ar"
 EOF
           fi
           
-          # Set environment variables untuk build
-          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_LINKER="${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-gcc'; else echo 'aarch64-openwrt-linux-musl-gcc'; fi)"
-          export CARGO_TARGET_$(echo ${{ matrix.rust_target }} | tr 'a-z-' 'A-Z_')_AR="${{ env.STAGING_DIR }}/toolchain/bin/$(if [ '${{ matrix.target }}' = 'x86_64' ]; then echo 'x86_64-openwrt-linux-musl-ar'; else echo 'aarch64-openwrt-linux-musl-ar'; fi)"
-          
-          # Build dengan cargo
+          # Build dengan cargo menggunakan toolchain OpenWrt
           cargo build --release --no-default-features --features alsa_backend --target ${{ matrix.rust_target }}
           
           # Salin binary
           mkdir -p "$GITHUB_WORKSPACE/binaries"
           cp target/${{ matrix.rust_target }}/release/spotifyd "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}"
 
-      - name: Create IPK package structure
+      - name: Prepare package directory
         run: |
-          set -eux
-          mkdir -p "$GITHUB_WORKSPACE/ipk/spotifyd-ng/CONTROL"
-          mkdir -p "$GITHUB_WORKSPACE/ipk/spotifyd-ng/usr/bin"
-          
-          # Copy binary
-          cp "$GITHUB_WORKSPACE/binaries/spotifyd-${{ matrix.target }}" "$GITHUB_WORKSPACE/ipk/spotifyd-ng/usr/bin/spotifyd"
-          chmod +x "$GITHUB_WORKSPACE/ipk/spotifyd-ng/usr/bin/spotifyd"
-
-      - name: Prepare OpenWrt package metadata
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          # Gunakan SDK untuk generate metadata yang proper
-          ./scripts/feeds update packages
-          ./scripts/feeds install -a -p packages
-          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
-          ./scripts/feeds update local
-          ./scripts/feeds install -a -p local
+          mkdir -p "$GITHUB_WORKSPACE/package/spotifyd-ng"
+          cp -r ${{ github.workspace }}/package/* "$GITHUB_WORKSPACE/package/spotifyd-ng/" || true
 
       - name: Build IPK package using SDK
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Build package menggunakan SDK OpenWrt
+          # Setup feeds
+          ./scripts/feeds update packages
+          ./scripts/feeds install -a -p packages
+          echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
+          ./scripts/feeds update local
+          ./scripts/feeds install spotifyd-ng
+          
+          # Build package
           make package/spotifyd-ng/compile V=sc
           
-          # Copy hasil build
+          # Collect artifacts
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
           find bin/packages -name "*spotifyd-ng*.ipk" -exec cp {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
 
