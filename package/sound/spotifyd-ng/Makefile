@@ -9,8 +9,16 @@ PKG_SOURCE_URL:=https://github.com/Spotifyd/spotifyd.git
 PKG_SOURCE_VERSION:=v0.4.1
 PKG_MIRROR_HASH:=skip
 
+PKG_BUILD_DEPENDS:=rust/host
+
 include $(INCLUDE_DIR)/package.mk
+
+# Include cargo.mk jika Rust available
+ifeq ($(CONFIG_PACKAGE_RUST),y)
 include $(TOPDIR)/feeds/packages/lang/rust/cargo.mk
+else
+$(error Rust package is required but not selected. Please enable CONFIG_PACKAGE_RUST)
+endif
 
 define Package/spotifyd-ng
   SECTION:=sound
@@ -21,16 +29,26 @@ define Package/spotifyd-ng
 endef
 
 define Package/spotifyd-ng/description
-  A spotify playing daemon.
+  A spotify playing daemon for OpenWrt.
 endef
 
-# Non-interactive build
 define Build/Configure
+	# Apply librespot patch
 	$(SED) '/^\[patch.crates-io\]/,/^$$/d' $(PKG_BUILD_DIR)/Cargo.toml
 	echo '[patch.crates-io]' >> $(PKG_BUILD_DIR)/Cargo.toml
 	echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> $(PKG_BUILD_DIR)/Cargo.toml
 endef
 
+define Build/Compile
+	$(call Build/Compile/Cargo,release)
+endef
+
+define Package/spotifyd-ng/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/release/spotifyd $(1)/usr/bin/
+endef
+
+# Build hanya dengan ALSA backend
 CARGO_ARGS += --no-default-features --features alsa_backend
 
 $(eval $(call BuildPackage,spotifyd-ng))
