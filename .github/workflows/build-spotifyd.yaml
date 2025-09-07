@@ -56,6 +56,7 @@ jobs:
           SDK_DIR=$(echo openwrt-sdk-*)
           echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
           echo "STAGING_DIR=$GITHUB_WORKSPACE/$SDK_DIR/staging_dir" >> $GITHUB_ENV
+          echo "SDK downloaded and extracted: $SDK_DIR"
 
       - name: Prepare SDK environment
         working-directory: ${{ env.SDK_DIR }}
@@ -68,6 +69,8 @@ jobs:
           mkdir -p host/.prereq-build
           touch host/.prereq-build
           echo "Prerequisite setup completed"
+          echo "Directory structure:"
+          ls -la host/
 
       - name: Setup package feeds
         working-directory: ${{ env.SDK_DIR }}
@@ -76,8 +79,15 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "=== FEEDS SETUP DEBUG ==="
+          echo "Current feeds.conf.default:"
+          cat feeds.conf.default || echo "No feeds.conf.default yet"
+          
           echo "Updating feeds..."
           ./scripts/feeds update -a
+          
+          echo "Feeds update completed. Available feeds:"
+          ./scripts/feeds list | head -10 || echo "Cannot list feeds"
           
           echo "Installing package dependencies..."
           ./scripts/feeds install -a -p packages
@@ -85,7 +95,10 @@ jobs:
           ./scripts/feeds install alsa-lib
           ./scripts/feeds install libstdcpp
           ./scripts/feeds install libpthread
-          echo "Package dependencies installed"
+          
+          echo "Package dependencies installed. Checking Rust:"
+          ./scripts/feeds list | grep rust || echo "Rust not found in feeds"
+          echo "Package dependencies setup completed"
 
       - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
@@ -94,20 +107,32 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "=== LOCAL FEED SETUP DEBUG ==="
           echo "Setting up local feed..."
           echo "src-link local $GITHUB_WORKSPACE/package" >> feeds.conf.default
+          
+          echo "Updated feeds.conf.default:"
+          cat feeds.conf.default
+          
           ./scripts/feeds update local
+          echo "Local feed updated"
+          
           ./scripts/feeds install -a -p local
+          echo "Local packages installed"
+          
+          echo "Checking if spotifyd-ng is available:"
+          ./scripts/feeds list | grep spotifyd || echo "spotifyd-ng not found in feeds list"
           echo "Local feed setup completed"
 
-      - name: Configure SDK dengan verification kuat
+      - name: Configure SDK untuk custom package
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "Step 1: Initial defconfig"
+          echo "=== CONFIGURATION DEBUG ==="
+          echo "Step 1: Initial configuration"
           make defconfig
           
           echo "Step 2: Verify .config exists"
@@ -118,40 +143,44 @@ jobs:
             exit 1
           fi
           
-          echo "Step 3: Enabling required packages..."
-          # List packages to enable
-          PACKAGES="rust spotifyd-ng alsa-lib libstdcpp libpthread"
+          echo "Initial .config size: $(wc -l < .config) lines"
+          echo "First 5 lines of .config:"
+          head -5 .config
           
-          for pkg in $PACKAGES; do
-            echo "Enabling package: $pkg"
+          echo "Step 3: Enable standard dependencies"
+          STANDARD_DEPS="rust alsa-lib libstdcpp libpthread"
+          
+          for pkg in $STANDARD_DEPS; do
+            echo "Processing package: $pkg"
             if grep -q "# CONFIG_PACKAGE_${pkg} is not set" .config; then
               sed -i "s/# CONFIG_PACKAGE_${pkg} is not set/CONFIG_PACKAGE_${pkg}=y/" .config
-              echo "Enabled $pkg via sed"
-            elif ! grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
-              echo "Added $pkg to config"
+              echo "✅ Enabled $pkg via sed"
+            elif grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+              echo "ℹ️ $pkg already enabled"
             else
-              echo "$pkg already enabled"
+              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+              echo "✅ Added $pkg to config"
             fi
           done
           
-          echo "Step 4: Final defconfig"
+          echo "Step 4: Finalize configuration"
           make defconfig
           
-          echo "Step 5: Final verification"
-          echo "=== CONFIG STATUS ==="
-          for pkg in $PACKAGES; do
+          echo "Step 5: Verify dependencies"
+          echo "=== FINAL CONFIG STATUS ==="
+          echo ".config size: $(wc -l < .config) lines"
+          
+          for pkg in $STANDARD_DEPS; do
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-              echo "✅ CONFIG_PACKAGE_${pkg}=y"
+              echo "✅ $pkg: ENABLED"
             else
-              echo "❌ CONFIG_PACKAGE_${pkg} NOT ENABLED!"
-              echo "Current config for $pkg:"
-              grep "CONFIG_PACKAGE_${pkg}" .config || echo "Not found"
+              echo "❌ $pkg: MISSING - $(grep CONFIG_PACKAGE_${pkg} .config || echo 'NOT FOUND')"
               exit 1
             fi
           done
           
-          echo "✅ All required packages enabled successfully"
+          echo "✅ All dependencies enabled successfully"
+          echo "ℹ️ Custom package spotifyd-ng will be built automatically from local feed"
 
       - name: Build spotifyd-ng package
         working-directory: ${{ env.SDK_DIR }}
@@ -160,29 +189,41 @@ jobs:
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
+          echo "=== BUILD DEBUG ==="
+          echo "Building spotifyd-ng from local feed..."
+          echo "Current directory: $(pwd)"
+          echo "Local feed contents:"
+          ls -la feeds/local/ || echo "No local feeds directory"
+          
+          echo "Package directory exists:"
+          find . -name "*spotifyd*" -type d || echo "No spotifyd directory found"
+          
           echo "Starting build process..."
           make package/feeds/local/spotifyd-ng/compile V=s
-          echo "Build process completed"
 
       - name: Collect artifacts
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
+          echo "=== ARTIFACTS COLLECTION DEBUG ==="
           echo "Collecting build artifacts..."
           mkdir -p "$GITHUB_WORKSPACE/out/${{ matrix.target }}"
           
-          # Find and copy IPK files
+          echo "Searching for IPK files in bin directory:"
+          find bin -name "*.ipk" | head -5 || echo "No IPK files found in bin"
+          
+          echo "Searching for spotifyd IPK files:"
           find bin -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
           
-          # Check if any files were found
-          if [ -z "$(ls -A "$GITHUB_WORKSPACE/out/${{ matrix.target }}")" ]; then
-            echo "Warning: No IPK files found in bin directory"
-            echo "Searching in other directories..."
-            find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
-          fi
+          echo "Searching in all directories:"
+          find . -name "*spotifyd-ng*.ipk" -exec cp -v {} "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" \;
           
           echo "Artifacts collected:"
           ls -la "$GITHUB_WORKSPACE/out/${{ matrix.target }}/" || echo "No artifacts found"
+          
+          echo "Build directory contents:"
+          ls -la bin/ 2>/dev/null || echo "No bin directory"
+          ls -la bin/packages/ 2>/dev/null || echo "No packages directory"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -195,42 +236,42 @@ jobs:
         if: failure()
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          echo "=== DETAILED DEBUG INFO ==="
+          echo "=== DETAILED DEBUG INFO AFTER FAILURE ==="
           echo "Current directory: $(pwd)"
-          echo "Directory structure:"
+          
+          echo "=== DIRECTORY STRUCTURE ==="
           ls -la
+          echo "--- feeds/ ---"
+          ls -la feeds/ 2>/dev/null || echo "No feeds directory"
+          echo "--- feeds/local/ ---"
+          ls -la feeds/local/ 2>/dev/null || echo "No local feeds"
+          echo "--- package/ ---"
+          ls -la package/ 2>/dev/null || echo "No package directory"
           
-          echo "=== .CONFIG STATUS ==="
-          if [ -f .config ]; then
-            echo "Config file exists"
-            echo "Rust config: $(grep 'CONFIG_PACKAGE_rust' .config || echo 'NOT FOUND')"
-            echo "spotifyd-ng config: $(grep 'CONFIG_PACKAGE_spotifyd-ng' .config || echo 'NOT FOUND')"
-            echo "First 10 lines of .config:"
-            head -10 .config
-          else
-            echo "ERROR: .config file does not exist!"
-            echo "Creating test config to verify permissions..."
-            touch test_config.txt
-            ls -la test_config.txt
-            rm -f test_config.txt
-          fi
+          echo "=== CONFIG FILES ==="
+          echo "--- .config ---"
+          cat .config 2>/dev/null | head -20 || echo "No .config file"
+          echo "--- feeds.conf.default ---"
+          cat feeds.conf.default 2>/dev/null || echo "No feeds.conf.default"
           
-          echo "=== FEEDS STATUS ==="
-          echo "Local feeds:"
-          ls -la feeds/local/ 2>/dev/null || echo "No local feeds directory"
-          
-          echo "Package feeds:"
-          ls -la feeds/packages/ 2>/dev/null || echo "No packages feeds directory"
+          echo "=== PACKAGE INFO ==="
+          echo "--- spotifyd-ng package ---"
+          find . -name "*spotifyd*" -type f 2>/dev/null || echo "No spotifyd files found"
+          echo "--- Makefile contents ---"
+          find feeds/local/ -name "Makefile" -exec cat {} \; 2>/dev/null || echo "No Makefile found"
           
           echo "=== RUST PACKAGE STATUS ==="
-          echo "Rust package files:"
+          echo "--- Rust in feeds ---"
           find feeds/packages/lang/rust -name "*" 2>/dev/null || echo "Rust package not found"
+          echo "--- Rust config ---"
+          grep "CONFIG_PACKAGE_rust" .config 2>/dev/null || echo "Rust config not found"
           
-          echo "=== SDK TOOLCHAIN ==="
-          echo "Toolchain directory:"
-          ls -la staging_dir/toolchain/ 2>/dev/null || echo "No toolchain directory"
+          echo "=== BUILD LOGS ==="
+          echo "--- Recent files in build_dir ---"
+          find build_dir/ -name "*.log" -exec tail -5 {} \; 2>/dev/null || echo "No build logs found"
           
-          echo "=== DISK SPACE ==="
+          echo "=== SYSTEM INFO ==="
+          echo "Disk space:"
           df -h
-          echo "=== MEMORY INFO ==="
+          echo "Memory:"
           free -h
