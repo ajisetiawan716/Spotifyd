@@ -14,9 +14,6 @@ PKG_MIRROR_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
 
-# HAPUS include cargo.mk karena file tidak ada dan kita gunakan system cargo
-# include $(INCLUDE_DIR)/cargo.mk
-
 define Package/spotifyd-ng
   SECTION:=sound
   CATEGORY:=Sound
@@ -39,20 +36,24 @@ define Build/Configure
 endef
 
 define Build/Compile
-	# Gunakan system cargo langsung
+	# Gunakan system cargo langsung dengan static linking untuk musl
 	cd $(PKG_BUILD_DIR) && \
 	CARGO_HOME="$(CARGO_HOME)" \
+	RUSTFLAGS="-C target-feature=+crt-static -C linker=$(TARGET_CC)" \
 	CARGO_TARGET_DIR="$(PKG_BUILD_DIR)/target" \
+	TARGET_CC="$(TARGET_CC)" \
+	TARGET_AR="$(TARGET_AR)" \
 	cargo build \
 		--release \
 		--no-default-features \
 		--features alsa_backend \
-		--target-dir="$(PKG_BUILD_DIR)/target"
+		--target-dir="$(PKG_BUILD_DIR)/target" \
+		--target $(REAL_GNU_TARGET_NAME)
 endef
 
 define Package/spotifyd-ng/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/release/spotifyd $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/$(REAL_GNU_TARGET_NAME)/release/spotifyd $(1)/usr/bin/
 endef
 
 $(eval $(call BuildPackage,spotifyd-ng))
