@@ -95,6 +95,19 @@ jobs:
           
           echo "Package dependencies installed"
 
+      - name: Remove rust package from feeds to prevent conflict
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          echo "=== REMOVING RUST PACKAGE FROM FEEDS ==="
+          
+          # Uninstall rust package dari feeds untuk menghindari conflict
+          ./scripts/feeds uninstall rust 2>/dev/null || true
+          ./scripts/feeds uninstall rust-stdlib 2>/dev/null || true
+          ./scripts/feeds uninstall rust-dev 2>/dev/null || true
+          
+          echo "✅ Rust packages removed from feeds"
+
       - name: Setup local feed
         working-directory: ${{ env.SDK_DIR }}
         run: |
@@ -133,6 +146,10 @@ jobs:
           # Enable spotifyd-ng package
           echo "CONFIG_PACKAGE_spotifyd-ng=y" >> .config
           
+          # Force disable rust untuk menghindari build dari feeds
+          sed -i '/CONFIG_PACKAGE_rust/d' .config 2>/dev/null || true
+          echo "CONFIG_PACKAGE_rust=n" >> .config
+          
           echo "Step 3: Finalize configuration"
           make defconfig
           
@@ -147,6 +164,15 @@ jobs:
               exit 1
             fi
           done
+          
+          # Pastikan rust disabled
+          if ! grep -q "CONFIG_PACKAGE_rust=n" .config; then
+            echo "❌ rust: SHOULD BE DISABLED BUT IS ENABLED"
+            echo "Current value: $(grep CONFIG_PACKAGE_rust .config 2>/dev/null || echo 'NOT FOUND')"
+            exit 1
+          else
+            echo "✅ rust: DISABLED (correct)"
+          fi
           
           echo "✅ All packages configured successfully"
 
@@ -177,13 +203,6 @@ jobs:
           echo "Using prebuilt Rust toolchain:"
           which rustc
           rustc --version
-          
-          # Export variables untuk cargo build
-          export CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
-          export CC_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-gcc"
-          export CXX_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-g++"
-          export AR_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-ar"
-          export STRIP_x86_64_unknown_linux_musl="$STAGING_DIR/toolchain-x86_64_gcc-12.3.0_musl/bin/x86_64-openwrt-linux-strip"
           
           echo "Starting build process..."
           make package/feeds/local/spotifyd-ng/compile V=s
@@ -225,6 +244,7 @@ jobs:
             echo "libstdcpp config: $(grep 'CONFIG_PACKAGE_libstdcpp' .config || echo 'NOT FOUND')"
             echo "libpthread config: $(grep 'CONFIG_PACKAGE_libpthread' .config || echo 'NOT FOUND')"
             echo "spotifyd-ng config: $(grep 'CONFIG_PACKAGE_spotifyd-ng' .config || echo 'NOT FOUND')"
+            echo "rust config: $(grep 'CONFIG_PACKAGE_rust' .config || echo 'NOT FOUND')"
           else
             echo "No .config file found"
           fi
