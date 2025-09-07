@@ -19,9 +19,11 @@ jobs:
           - target: x86_64
             pretty: x86-64
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            cache_key: sdk-x86_64-23.05.5
           - target: aarch64_generic
             pretty: mediatek-filogic
             sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            cache_key: sdk-aarch64-23.05.5
 
     env:
       TERM: dumb
@@ -56,7 +58,17 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Download OpenWrt SDK
+      - name: Cache OpenWRT SDK
+        uses: actions/cache@v3
+        id: sdk-cache
+        with:
+          path: openwrt-sdk-*
+          key: ${{ matrix.cache_key }}-${{ hashFiles('package/sound/spotifyd-ng/Makefile') }}
+          restore-keys: |
+            ${{ matrix.cache_key }}-
+
+      - name: Download OpenWrt SDK (if not cached)
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |
           set -eux
           echo "Downloading SDK for ${{ matrix.target }}..."
@@ -66,6 +78,15 @@ jobs:
           echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
           echo "STAGING_DIR=$GITHUB_WORKSPACE/$SDK_DIR/staging_dir" >> $GITHUB_ENV
           echo "SDK downloaded and extracted: $SDK_DIR"
+
+      - name: Set SDK environment (if cached)
+        if: steps.sdk-cache.outputs.cache-hit == 'true'
+        run: |
+          set -eux
+          SDK_DIR=$(echo openwrt-sdk-*)
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          echo "STAGING_DIR=$GITHUB_WORKSPACE/$SDK_DIR/staging_dir" >> $GITHUB_ENV
+          echo "✅ Using cached SDK: $SDK_DIR"
 
       - name: Prepare SDK environment
         working-directory: ${{ env.SDK_DIR }}
@@ -78,6 +99,23 @@ jobs:
           mkdir -p host/.prereq-build
           touch host/.prereq-build
           echo "Prerequisite setup completed"
+
+      - name: Check alsa-lib availability
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          set -eux
+          echo "=== CHECKING ALSA-LIB AVAILABILITY ==="
+          
+          if [ -f "$STAGING_DIR/usr/lib/libasound.so" ] || [ -f "$STAGING_DIR/usr/lib/libasound.a" ]; then
+            echo "✅ alsa-lib already available in SDK"
+            echo "ALSA_PREBUILT=true" >> $GITHUB_ENV
+          else
+            echo "⚠️ alsa-lib not found, will need to build"
+            echo "ALSA_PREBUILT=false" >> $GITHUB_ENV
+          fi
+          
+          # List available alsa files
+          find "$STAGING_DIR" -name "*asound*" 2>/dev/null | head -5 || echo "No alsa files found"
 
       - name: Setup package feeds
         working-directory: ${{ env.SDK_DIR }}
@@ -96,24 +134,28 @@ jobs:
           
           echo "Package dependencies installed"
 
-      - name: Build alsa-lib first
+      - name: Build alsa-lib only if missing
+        if: env.ALSA_PREBUILT == 'false'
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -eux
           export TERM=dumb
           export KCONFIG_NONINTERACTIVE=1
           
-          echo "=== BUILDING ALSA-LIB FIRST ==="
-          make package/feeds/packages/alsa-lib/compile V=s
-
-      - name: Check alsa library availability
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          set -eux
-          echo "=== CHECKING ALSA LIBRARY ==="
-          find $(STAGING_DIR) -name "*asound*" -type f | head -10
-          ls -la $(STAGING_DIR)/usr/lib/libasound* 2>/dev/null || echo "No alsa libraries found"
-          find $(STAGING_DIR) -name "libasound.so*" | head -5
+          echo "=== BUILDING ALSA-LIB (may take 30+ minutes) ==="
+          echo "This is only needed once, subsequent builds will use cache"
+          
+          # Build dengan timeout 45 menit
+          timeout 2700 make package/feeds/packages/alsa-lib/compile V=s || \
+          if [ $? -eq 124 ]; then
+            echo "⚠️ Build timed out after 45 minutes, checking if successful..."
+            if [ -f "$STAGING_DIR/usr/lib/libasound.so" ]; then
+              echo "✅ Build completed despite timeout"
+            else
+              echo "❌ Build failed due to timeout"
+              exit 1
+            fi
+          fi
 
       - name: Remove rust package from feeds to prevent conflict
         working-directory: ${{ env.SDK_DIR }}
