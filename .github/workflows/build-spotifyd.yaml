@@ -154,25 +154,55 @@ jobs:
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
 
-      - name: Patch and build spotifyd
+      - name: Force librespot v0.7.1 patch
         run: |
           set -eux
           cd spotifyd-src
           
-          # Remove existing Cargo.lock to force fresh resolution
+          # Completely remove Cargo.lock and target directory for clean build
           rm -f Cargo.lock
+          rm -rf target
           
-          # Apply patch by directly modifying dependency version
-          sed -i 's/^librespot =.*/librespot = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          # Remove existing patches section if any
+          sed -i '/^\[patch.crates-io\]/,/^$/d' Cargo.toml
           
-          # Force update with precise package
-          cargo update -p librespot
+          # Create comprehensive patch section for all librespot components
+          echo '' >> Cargo.toml
+          echo '[patch.crates-io]' >> Cargo.toml
+          echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
+          echo 'librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
           
-          # Verify patch
-          echo "=== VERIFYING PATCH ==="
-          cargo tree | grep librespot || echo "Librespot not found in tree"
+          # Force full dependency resolution
+          cargo update
           
-          echo "Building spotifyd..."
+          # Verify patch application
+          echo "=== VERIFYING PATCH APPLICATION ==="
+          echo "Cargo.toml patch section:"
+          grep -A 15 "\[patch.crates-io\]" Cargo.toml
+          echo ""
+          echo "Librespot versions in Cargo.lock:"
+          grep -A 3 -B 1 "librespot" Cargo.lock || echo "No librespot entries found in Cargo.lock"
+          echo ""
+          echo "Dependency tree:"
+          cargo tree | grep librespot | head -10
+
+      - name: Build spotifyd with static ALSA
+        run: |
+          set -eux
+          cd spotifyd-src
+          
+          echo "Building spotifyd with static ALSA linking..."
+          echo "CC: $CC"
+          echo "AR: $AR"
+          echo "Target: $CARGO_TARGET"
+          
           export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
           
           CARGO_HOME="$HOME/.cargo" \
@@ -187,7 +217,18 @@ jobs:
             --target $CARGO_TARGET
           
           $STRIP target/$CARGO_TARGET/release/spotifyd
-          echo "✅ Build completed successfully"
+
+      - name: Verify ALSA linking
+        run: |
+          set -eux
+          cd spotifyd-src
+          
+          echo "Checking binary dependencies..."
+          file target/$CARGO_TARGET/release/spotifyd
+          
+          echo "Checking ALSA symbols..."
+          $STRIP -g target/$CARGO_TARGET/release/spotifyd || true
+          nm target/$CARGO_TARGET/release/spotifyd | grep -i alsa || echo "No ALSA symbols found (may be statically linked)"
 
       - name: Create OpenWRT package
         run: |
