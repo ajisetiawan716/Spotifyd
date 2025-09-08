@@ -148,48 +148,27 @@ jobs:
           echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "ALSA library built and installed"
 
-      - name: Setup pkg-config and OpenSSL environment
+      - name: Setup pkg-config environment
         run: |
           set -eux
           
-          # Set pkg-config paths
           export PKG_CONFIG_ALLOW_CROSS=1
           export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
           export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           
-          # Set OpenSSL environment variables to use toolchain OpenSSL
-          export OPENSSL_DIR="$TOOLCHAIN_DIR"
-          export OPENSSL_STATIC=1
-          export OPENSSL_LIB_DIR="$TOOLCHAIN_DIR/lib"
-          export OPENSSL_INCLUDE_DIR="$TOOLCHAIN_DIR/include"
-          
-          # Set STAGING_DIR environment variable required by OpenWRT toolchain
-          export STAGING_DIR="$TOOLCHAIN_DIR"
-          
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
-          echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
-          
-          echo "Testing pkg-config for openssl..."
-          PKG_CONFIG_ALLOW_CROSS=1 \
-          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
-          pkg-config --exists --print-errors openssl || echo "OpenSSL not found via pkg-config, using manual setup"
 
       - name: Force librespot v0.7.1 patch
         run: |
           set -eux
           cd spotifyd-src
           
-          # Completely remove Cargo.lock and target directory for clean build
-          rm -f Cargo.lock
+          # Jangan hapus Cargo.lock untuk menjaga dependency consistency
+          # rm -f Cargo.lock  # DIHAPUS - biarkan Cargo.lock tetap ada
           rm -rf target
           
           # Backup original Cargo.toml
@@ -209,8 +188,8 @@ jobs:
           # Remove any existing patch section to avoid conflicts
           sed -i '/^\[patch.crates-io\]/,/^$/d' Cargo.toml
           
-          # Force full dependency resolution
-          cargo update --verbose
+          # Force update hanya librespot packages
+          cargo update -p librespot -p librespot-core -p librespot-audio -p librespot-protocol -p librespot-connect -p librespot-playback -p librespot-discovery -p librespot-metadata -p librespot-oauth
           
           # Verify patch application
           echo "=== VERIFYING PATCH APPLICATION ==="
@@ -221,31 +200,30 @@ jobs:
           grep -A 2 -B 1 "librespot.*git" Cargo.lock || echo "No git dependencies found - checking all librespot:"
           grep -A 2 -B 1 "name = \"librespot" Cargo.lock || echo "No librespot entries in Cargo.lock"
 
-      - name: Build spotifyd with static linking
+      - name: Build spotifyd with vendored openssl
         run: |
           set -eux
           cd spotifyd-src
           
-          echo "Building spotifyd with static linking..."
+          echo "Building spotifyd with vendored OpenSSL..."
           echo "CC: $CC"
           echo "AR: $AR"
           echo "Target: $CARGO_TARGET"
-          echo "OPENSSL_DIR: $OPENSSL_DIR"
-          echo "STAGING_DIR: $STAGING_DIR"
           
-          # Use static linking with toolchain libraries
-          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -L $TOOLCHAIN_DIR/lib -l asound -l ssl -l crypto -l dl -l pthread -l m"
+          # Gunakan vendored openssl untuk menghindari dependency headers
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
+          
+          # Gunakan openssl-sys dengan fitur vendored
+          export OPENSSL_NO_VENDOR=0
+          export OPENSSL_STATIC=1
           
           CARGO_HOME="$HOME/.cargo" \
           RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
           PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
-          OPENSSL_DIR="$OPENSSL_DIR" \
+          OPENSSL_NO_VENDOR=0 \
           OPENSSL_STATIC=1 \
-          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
-          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
-          STAGING_DIR="$STAGING_DIR" \
           cargo build \
             --release \
             --no-default-features \
