@@ -43,7 +43,7 @@ jobs:
             libncurses-dev unzip rsync gawk gettext \
             musl-tools pkg-config libssl-dev \
             libasound2-dev autoconf automake libtool \
-            openssl cmake ninja-build
+            openssl cmake ninja-build perl
 
       - name: Install Rust toolchain
         run: |
@@ -148,39 +148,19 @@ jobs:
           echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "ALSA library built and installed"
 
-      - name: Check OpenSSL in toolchain
+      - name: Setup environment variables
         run: |
           set -eux
-          echo "Checking for OpenSSL in toolchain..."
           
-          # Cek apakah toolchain sudah include OpenSSL
-          echo "=== TOOLCHAIN OPENSSL FILES ==="
-          find $TOOLCHAIN_DIR -name "*ssl*" -type f | head -20 || echo "No SSL files found"
-          find $TOOLCHAIN_DIR -name "*crypto*" -type f | head -20 || echo "No crypto files found"
-          find $TOOLCHAIN_DIR -name "openssl*" -type f | head -20 || echo "No openssl files found"
-          
-          echo "=== TOOLCHAIN LIBRARIES ==="
-          ls -la $TOOLCHAIN_DIR/usr/lib/libssl* 2>/dev/null || echo "No SSL libraries in toolchain"
-          ls -la $TOOLCHAIN_DIR/usr/lib/libcrypto* 2>/dev/null || echo "No crypto libraries in toolchain"
-          
-          echo "=== TOOLCHAIN HEADERS ==="
-          ls -la $TOOLCHAIN_DIR/usr/include/openssl/ 2>/dev/null || echo "No OpenSSL headers in toolchain"
-
-      - name: Setup environment for vendored OpenSSL
-        run: |
-          set -eux
-          echo "Setting up environment for vendored OpenSSL build..."
-          
-          # Setup pkg-config environment
+          # Setup pkg-config
           export PKG_CONFIG_ALLOW_CROSS=1
           export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
           export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           
-          # Force vendored OpenSSL
+          # Setup untuk vendored OpenSSL
           export OPENSSL_STATIC=1
           export OPENSSL_NO_VENDOR=0
-          export OPENSSL_DIR="/tmp/openssl"  # Dummy directory
           
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
@@ -188,9 +168,8 @@ jobs:
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
           echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=/tmp/openssl" >> $GITHUB_ENV
 
-      - name: Force librespot v0.7.1 with vendored openssl
+      - name: Force librespot v0.7.1 with proper OpenSSL handling
         run: |
           set -eux
           cd spotifyd-src
@@ -202,15 +181,15 @@ jobs:
           echo "=== CHECKING EXISTING DEPENDENCIES ==="
           grep -n "librespot" Cargo.toml || echo "No librespot dependencies found in original Cargo.toml"
             
-          # Modifikasi dependency librespot dengan vendored openssl
-          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["with-alsa", "with-dns-sd", "vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["with-alsa", "with-dns-sd", "vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
+          # Modifikasi dependency librespot ke versi 0.7.1
+          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
+          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
+          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
           
           # Pastikan openssl-sys menggunakan vendored
           sed -i 's|openssl-sys =.*|openssl-sys = { version = "0.9", features = ["vendored"] }|g' Cargo.toml || echo "openssl-sys dependency not found, adding manually"
@@ -233,15 +212,22 @@ jobs:
           # Update dependencies
           cargo update --verbose
 
-      - name: Install build dependencies for vendored OpenSSL
+      - name: Build OpenSSL manually for target
         run: |
           set -eux
-          echo "Installing dependencies for vendored OpenSSL build..."
-          sudo apt-get install -y --no-install-recommends \
-            perl \
-            make \
-            gcc \
-            libc6-dev
+          echo "Building OpenSSL for host system (for vendored build)..."
+          
+          # Download OpenSSL source
+          curl -fsSL https://www.openssl.org/source/openssl-1.1.1w.tar.gz -o openssl.tar.gz
+          tar -xf openssl.tar.gz
+          cd openssl-1.1.1w
+          
+          # Build untuk host system (bukan cross-compile)
+          ./config --prefix=/tmp/openssl --openssldir=/tmp/openssl no-shared
+          make -j$(nproc)
+          make install
+          
+          echo "OpenSSL built for host system"
 
       - name: Build spotifyd with vendored OpenSSL
         run: |
@@ -250,7 +236,7 @@ jobs:
             
           echo "Building spotifyd with vendored OpenSSL..."
           
-          # Setup environment untuk vendored build
+          # Setup environment untuk build
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export CC="$CC"
           export AR="$AR"
