@@ -194,6 +194,8 @@ jobs:
           echo 'librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
           
           # Force full dependency resolution
+          rm -f Cargo.lock
+          ls -l
           cargo update --verbose
             
           # Verify patch application
