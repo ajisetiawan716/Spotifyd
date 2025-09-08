@@ -28,11 +28,6 @@ jobs:
 
     steps:
       - name: Checkout spotifyd source
-        uses: actions/checkout@v4
-        with:
-          repository: Spotifyd/spotifyd
-          ref: v0.4.1
-          path: spotifyd-src
 
       - name: Bump librespot deps to 0.7 (crates.io)
         run: |
