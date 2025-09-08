@@ -43,7 +43,7 @@ jobs:
             libncurses-dev unzip rsync gawk gettext \
             musl-tools pkg-config libssl-dev \
             libasound2-dev autoconf automake libtool \
-            openssl
+            openssl cmake ninja-build
 
       - name: Install Rust toolchain
         run: |
@@ -162,13 +162,37 @@ jobs:
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
 
-      - name: Force librespot v0.7.1 by modifying dependencies directly
+      - name: Create openssl.pc file manually
+        run: |
+          set -eux
+          echo "Creating openssl.pc file manually..."
+          
+          mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
+          cat > $TOOLCHAIN_DIR/usr/lib/pkgconfig/openssl.pc << 'EOF'
+          prefix=$TOOLCHAIN_DIR/usr
+          exec_prefix=${prefix}
+          libdir=${exec_prefix}/lib
+          includedir=${prefix}/include
+          
+          Name: OpenSSL
+          Description: Secure Sockets Layer and cryptography libraries and tools
+          Version: 1.1.1
+          Requires: 
+          Libs: -L${libdir} -lssl -lcrypto
+          Libs.private: -lz -ldl -lpthread 
+          Cflags: -I${includedir}
+          EOF
+          
+          # Replace the variable with actual path
+          sed -i "s|\\$TOOLCHAIN_DIR|$TOOLCHAIN_DIR|g" $TOOLCHAIN_DIR/usr/lib/pkgconfig/openssl.pc
+          
+          echo "openssl.pc file created:"
+          cat $TOOLCHAIN_DIR/usr/lib/pkgconfig/openssl.pc
+
+      - name: Force librespot v0.7.1 with proper OpenSSL configuration
         run: |
           set -eux
           cd spotifyd-src
-            
-          # Jangan hapus Cargo.lock untuk menjaga dependency consistency
-          rm -rf target
             
           # Backup original Cargo.toml
           cp Cargo.toml Cargo.toml.original
@@ -177,7 +201,7 @@ jobs:
           echo "=== CHECKING EXISTING DEPENDENCIES ==="
           grep -n "librespot" Cargo.toml || echo "No librespot dependencies found in original Cargo.toml"
             
-          # Modifikasi langsung semua dependency librespot ke versi 0.7.1 dari git
+          # Modifikasi dependency librespot
           sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
           sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
           sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
@@ -187,12 +211,6 @@ jobs:
           sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
           sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
           
-          # Modifikasi dependencies librespot
-          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["vendored-openssl"] }|g' Cargo.toml
-          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["vendored-openssl"] }|g' Cargo.toml
-            
-          # Tambahkan vendored-openssl untuk openssl-sys jika diperlukan
-          #sed -i 's|openssl-sys =.*|openssl-sys = { version = "0.9", features = ["vendored"] }|g' Cargo.toml || echo "openssl-sys dependency not found, will use default"
           # Hapus Cargo.lock untuk memaksa resolusi dependency baru
           rm -f Cargo.lock
             
@@ -208,26 +226,32 @@ jobs:
           echo "=== VERIFYING VERSION 0.7.1 USAGE ==="
           cargo tree -p librespot-core --depth=0 || echo "librespot-core not found"
           cargo tree -p librespot-audio --depth=0 || echo "librespot-audio not found"
+          
+      - name: Setup OpenSSL environment variables
+        run: |
+          set -eux
+          export OPENSSL_DIR=$TOOLCHAIN_DIR/usr
+          export OPENSSL_LIB_DIR=$TOOLCHAIN_DIR/usr/lib
+          export OPENSSL_INCLUDE_DIR=$TOOLCHAIN_DIR/usr/include
+          export OPENSSL_STATIC=1
+          
+          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=1" >> $GITHUB_ENV
 
-      - name: Build spotifyd with vendored openssl
+      - name: Build spotifyd with static linking
         run: |
           set -eux
           cd spotifyd-src
             
-          #echo "Building spotifyd with vendored OpenSSL..."
-            
-          # Set environment variables untuk OpenSSL
-          export OPENSSL_DIR=$TOOLCHAIN_DIR/usr
-          export OPENSSL_LIB_DIR=$TOOLCHAIN_DIR/usr/lib
-          export OPENSSL_INCLUDE_DIR=$TOOLCHAIN_DIR/usr/include
-            
-          # Gunakan vendored openssl
-          export OPENSSL_NO_VENDOR=0
-          export OPENSSL_STATIC=1
+          echo "Building spotifyd with static linking..."
             
           # RUSTFLAGS untuk linker
-          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m -l ssl -l crypto"
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
             
+          # Build dengan environment yang tepat
           CARGO_HOME="$HOME/.cargo" \
           RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
@@ -236,8 +260,8 @@ jobs:
           OPENSSL_DIR="$OPENSSL_DIR" \
           OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
           OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
-          OPENSSL_NO_VENDOR=0 \
           OPENSSL_STATIC=1 \
+          OPENSSL_NO_VENDOR=1 \
           cargo build \
             --release \
             --no-default-features \
@@ -261,23 +285,13 @@ jobs:
           echo "Binary size:"
           ls -la target/$CARGO_TARGET/release/spotifyd
 
-      - name: Verify OpenSSL setup
-        run: |
-          set -eux
-          echo "Verifying OpenSSL installation..."
-          echo "OPENSSL_DIR: $OPENSSL_DIR"
-          echo "OPENSSL_LIB_DIR: $OPENSSL_LIB_DIR"
-          echo "OPENSSL_INCLUDE_DIR: $OPENSSL_INCLUDE_DIR"
-            
-          ls -la $TOOLCHAIN_DIR/usr/lib/pkgconfig/ || echo "pkgconfig directory not found"
-          ls -la $TOOLCHAIN_DIR/usr/lib/libssl* || echo "SSL libraries not found"
-          ls -la $TOOLCHAIN_DIR/usr/lib/libcrypto* || echo "Crypto libraries not found"
-            
-          # Test pkg-config
-          PKG_CONFIG_ALLOW_CROSS=1 \
-          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig" \
-          pkg-config --exists --print-errors openssl && echo "OpenSSL found via pkg-config" || echo "OpenSSL not found via pkg-config"
+          echo "=== CHECKING OPENSSL LINKAGE ==="
+          # Check if OpenSSL symbols are present
+          if readelf -s target/$CARGO_TARGET/release/spotifyd | grep -q "SSL"; then
+            echo "✅ OpenSSL symbols found in binary"
+          else
+            echo "⚠️  OpenSSL symbols not found - may be using system OpenSSL"
+          fi
 
       - name: Create OpenWRT package
         run: |

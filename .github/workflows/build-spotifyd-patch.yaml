@@ -3,7 +3,7 @@ name: Build Spotifyd Patch
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
       - 'src/**'
       - '.github/workflows/build-spotifyd.yaml'
@@ -192,7 +192,7 @@ jobs:
           #sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["vendored-openssl"] }|g' Cargo.toml
             
           # Tambahkan vendored-openssl untuk openssl-sys jika diperlukan
-          sed -i 's|openssl-sys =.*|openssl-sys = { version = "0.9", features = ["vendored"] }|g' Cargo.toml || echo "openssl-sys dependency not found, will use default"
+          #sed -i 's|openssl-sys =.*|openssl-sys = { version = "0.9", features = ["vendored"] }|g' Cargo.toml || echo "openssl-sys dependency not found, will use default"
           # Hapus Cargo.lock untuk memaksa resolusi dependency baru
           rm -f Cargo.lock
             
@@ -213,24 +213,29 @@ jobs:
         run: |
           set -eux
           cd spotifyd-src
-          
-          echo "Building spotifyd with vendored OpenSSL..."
-          echo "CC: $CC"
-          echo "AR: $AR"
-          echo "Target: $CARGO_TARGET"
-          
-          # Gunakan vendored openssl untuk menghindari dependency headers
-          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
-          
-          # Gunakan openssl-sys dengan fitur vendored
+            
+          #echo "Building spotifyd with vendored OpenSSL..."
+            
+          # Set environment variables untuk OpenSSL
+          export OPENSSL_DIR=$TOOLCHAIN_DIR/usr
+          export OPENSSL_LIB_DIR=$TOOLCHAIN_DIR/usr/lib
+          export OPENSSL_INCLUDE_DIR=$TOOLCHAIN_DIR/usr/include
+            
+          # Gunakan vendored openssl
           export OPENSSL_NO_VENDOR=0
           export OPENSSL_STATIC=1
-          
+            
+          # RUSTFLAGS untuk linker
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m -l ssl -l crypto"
+            
           CARGO_HOME="$HOME/.cargo" \
           RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$PKG_CONFIG_PATH" \
+          OPENSSL_DIR="$OPENSSL_DIR" \
+          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
+          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
           OPENSSL_NO_VENDOR=0 \
           OPENSSL_STATIC=1 \
           cargo build \
@@ -238,7 +243,7 @@ jobs:
             --no-default-features \
             --features alsa_backend \
             --target $CARGO_TARGET
-          
+            
           $STRIP target/$CARGO_TARGET/release/spotifyd
 
       - name: Verify build and dependencies
@@ -255,6 +260,24 @@ jobs:
           
           echo "Binary size:"
           ls -la target/$CARGO_TARGET/release/spotifyd
+
+      - name: Verify OpenSSL setup
+        run: |
+          set -eux
+          echo "Verifying OpenSSL installation..."
+          echo "OPENSSL_DIR: $OPENSSL_DIR"
+          echo "OPENSSL_LIB_DIR: $OPENSSL_LIB_DIR"
+          echo "OPENSSL_INCLUDE_DIR: $OPENSSL_INCLUDE_DIR"
+            
+          ls -la $TOOLCHAIN_DIR/usr/lib/pkgconfig/ || echo "pkgconfig directory not found"
+          ls -la $TOOLCHAIN_DIR/usr/lib/libssl* || echo "SSL libraries not found"
+          ls -la $TOOLCHAIN_DIR/usr/lib/libcrypto* || echo "Crypto libraries not found"
+            
+          # Test pkg-config
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig" \
+          pkg-config --exists --print-errors openssl && echo "OpenSSL found via pkg-config" || echo "OpenSSL not found via pkg-config"
 
       - name: Create OpenWRT package
         run: |
