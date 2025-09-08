@@ -233,15 +233,15 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
           PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$PKG_CONFIG_PATH" \
-          OPENSSL_DIR="$OPENSSL_DIR" \
-          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
-          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
-          OPENSSL_NO_VENDOR=0 \
-          OPENSSL_STATIC=1 \
+          #OPENSSL_DIR="$OPENSSL_DIR" \
+          #OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
+          #OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
+          #OPENSSL_NO_VENDOR=0 \
+          #OPENSSL_STATIC=1 \
           cargo build \
             --release \
             --no-default-features \
-            --features alsa_backend,vendored-openssl \
+            --features alsa_backend \
             --target $CARGO_TARGET
             
           $STRIP target/$CARGO_TARGET/release/spotifyd
