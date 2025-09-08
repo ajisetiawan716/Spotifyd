@@ -154,7 +154,7 @@ jobs:
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
 
-      - name: Force librespot v0.7.1 patch
+      - name: Force librespot patch with direct dependency modification
         run: |
           set -eux
           cd spotifyd-src
@@ -163,35 +163,37 @@ jobs:
           rm -f Cargo.lock
           rm -rf target
           
-          # Remove existing patches section if any
+          # Backup original Cargo.toml
+          cp Cargo.toml Cargo.toml.original
+          
+          # Directly modify version requirements in dependencies section
+          # First, find and replace all librespot dependencies
+          sed -i 's/^librespot =.*/librespot = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-core =.*/librespot-core = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-audio =.*/librespot-audio = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-protocol =.*/librespot-protocol = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-connect =.*/librespot-connect = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-playback =.*/librespot-playback = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-discovery =.*/librespot-discovery = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-metadata =.*/librespot-metadata = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          sed -i 's/^librespot-oauth =.*/librespot-oauth = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          
+          # Remove any existing patch section to avoid conflicts
           sed -i '/^\[patch.crates-io\]/,/^$/d' Cargo.toml
           
-          # Create comprehensive patch section for all librespot components
-          echo '' >> Cargo.toml
-          echo '[patch.crates-io]' >> Cargo.toml
-          echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          echo 'librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
-          
-          # Force full dependency resolution
-          cargo update
+          # Force full dependency resolution with verbose output
+          cargo update --verbose
           
           # Verify patch application
           echo "=== VERIFYING PATCH APPLICATION ==="
-          echo "Cargo.toml patch section:"
-          grep -A 15 "\[patch.crates-io\]" Cargo.toml
+          echo "Modified dependencies in Cargo.toml:"
+          grep -n "librespot" Cargo.toml
           echo ""
-          echo "Librespot versions in Cargo.lock:"
-          grep -A 3 -B 1 "librespot" Cargo.lock || echo "No librespot entries found in Cargo.lock"
+          echo "Cargo.lock entries (looking for git sources):"
+          grep -A 2 -B 1 "git.*librespot" Cargo.lock || echo "No git dependencies found in Cargo.lock"
           echo ""
-          echo "Dependency tree:"
-          cargo tree | grep librespot | head -10
+          echo "All librespot entries in Cargo.lock:"
+          grep -A 3 -B 1 "name = \"librespot" Cargo.lock || echo "No librespot entries in Cargo.lock"
 
       - name: Build spotifyd with static ALSA
         run: |
@@ -214,21 +216,25 @@ jobs:
             --release \
             --no-default-features \
             --features alsa_backend \
-            --target $CARGO_TARGET
+            --target $CARGO_TARGET \
+            --verbose
           
           $STRIP target/$CARGO_TARGET/release/spotifyd
 
-      - name: Verify ALSA linking
+      - name: Verify build and dependencies
         run: |
           set -eux
           cd spotifyd-src
           
-          echo "Checking binary dependencies..."
+          echo "=== BUILD VERIFICATION ==="
+          echo "Binary info:"
           file target/$CARGO_TARGET/release/spotifyd
           
-          echo "Checking ALSA symbols..."
-          $STRIP -g target/$CARGO_TARGET/release/spotifyd || true
-          nm target/$CARGO_TARGET/release/spotifyd | grep -i alsa || echo "No ALSA symbols found (may be statically linked)"
+          echo "Binary size:"
+          ls -la target/$CARGO_TARGET/release/spotifyd
+          
+          echo "Checking for librespot version in binary:"
+          strings target/$CARGO_TARGET/release/spotifyd | grep -i librespot | head -5 || echo "No librespot strings found"
 
       - name: Create OpenWRT package
         run: |
@@ -261,10 +267,11 @@ jobs:
           path: output/${{ matrix.target }}/
           if-no-files-found: error
 
-      - name: Verify package
+      - name: Final verification
         run: |
-          echo "=== PACKAGE VERIFICATION ==="
-          echo "Binary info:"
+          echo "=== FINAL PACKAGE VERIFICATION ==="
+          echo "Binary architecture:"
           file spotifyd-src/target/$CARGO_TARGET/release/spotifyd
           echo "Package contents:"
           tar -ztvf output/${{ matrix.target }}/*.ipk || echo "Package not found"
+          echo "Build process completed!"
