@@ -196,7 +196,16 @@ jobs:
           # Force full dependency resolution
           rm -f Cargo.lock
           ls -l
-          cargo update --verbose
+          cargo update -p librespot --precise 0.7.1
+          cargo update -p librespot-core --precise 0.7.1
+          cargo update -p librespot-audio --precise 0.7.1
+          cargo update -p librespot-protocol --precise 0.7.1
+          cargo update -p librespot-connect --precise 0.7.1
+          cargo update -p librespot-playback --precise 0.7.1
+          cargo update -p librespot-discovery --precise 0.7.1
+          cargo update -p librespot-metadata --precise 0.7.1
+          cargo update -p librespot-oauth --precise 0.7.1
+          # ... untuk setiap komponen
             
           # Verify patch application
           echo "=== VERIFYING PATCH APPLICATION ==="
