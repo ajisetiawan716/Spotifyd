@@ -241,7 +241,7 @@ jobs:
           cargo build \
             --release \
             --no-default-features \
-            --features alsa_backend,vendored-openssl \
+            --features alsa_backend \
             --target $CARGO_TARGET
             
           $STRIP target/$CARGO_TARGET/release/spotifyd
