@@ -27,7 +27,7 @@ jobs:
             toolchain_dir: toolchain-aarch64_cortex-a53_gcc-12.3.0_musl
 
     steps:
-      - name: Checkout spotifyd source
+      - name: Checkout spotifyd sources
 
       - name: Bump librespot deps to 0.7 (crates.io)
         run: |
