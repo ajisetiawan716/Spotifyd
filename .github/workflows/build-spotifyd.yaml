@@ -222,14 +222,14 @@ jobs:
           cd spotifyd-src
           cp Cargo.toml Cargo.toml.original
           
-          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
-          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
-          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", branch ="dev", default-features = false }|g' Cargo.toml
+          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", branch ="dev", default-features = false }|g' Cargo.toml
+          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", branch ="dev" }|g' Cargo.toml
+          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", branch ="dev" }|g' Cargo.toml
+          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", branch ="dev" }|g' Cargo.toml
+          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", branch ="dev" }|g' Cargo.toml
+          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", branch ="dev" }|g' Cargo.toml
+          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", branch ="dev" }|g' Cargo.toml
           
           rm -f Cargo.lock
           cargo update --verbose
