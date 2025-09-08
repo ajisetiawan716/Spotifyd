@@ -1,0 +1,16 @@
+From 0000000000000000000000000000000000000004 Mon Sep 17 00:00:00 2001
+From: CI <ci@example.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 4/6] config: drop mapping for DeviceType::HomeThing (removed upstream)
+
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -90,9 +90,6 @@ fn map_device_type(dt: librespot_discovery::DeviceType) -> LSDeviceType {
+     match dt {
+-        librespot_discovery::DeviceType::HomeThing => {
+-            LSDeviceType::HomeThing
+-        }
+         // mapping lain tetap
+         _ => LSDeviceType::Speaker,
+     }
+ }

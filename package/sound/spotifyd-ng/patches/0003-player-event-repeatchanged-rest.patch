@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
+From: CI <ci@example.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 3/6] process: adapt PlayerEvent::RepeatChanged to include ..
+
+--- a/src/process.rs
++++ b/src/process.rs
+@@ -175,9 +175,9 @@ fn handle_player_event(event: PlayerEvent) {
+-    match event {
+-        PlayerEvent::RepeatChanged { repeat } => {
++    match event {
++        PlayerEvent::RepeatChanged { repeat, .. } => {
+             // gunakan hanya field yang dibutuhkan
+         }
+         _ => {}
+     }
+ }

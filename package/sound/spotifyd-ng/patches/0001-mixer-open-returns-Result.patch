@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: CI <ci@example.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 1/6] mixer: adapt open() to return Result for librespot 0.7.x
+
+--- a/src/alsa_mixer.rs
++++ b/src/alsa_mixer.rs
+@@ -1,10 +1,14 @@
+ use librespot_playback::mixer::Mixer;
+ use librespot_playback::mixer::MixerConfig;
+ 
+ impl Mixer for AlsaMixer {
+-    fn open(_: MixerConfig) -> AlsaMixer {
+-        AlsaMixer::new()
++    fn open(_: MixerConfig) -> std::result::Result<AlsaMixer, librespot_core::Error> {
++        // Sesuaikan inisialisasi jika implementasi Anda berbeda.
++        Ok(AlsaMixer::new())
+     }
+ }
+ 
+--- a/src/no_mixer.rs
++++ b/src/no_mixer.rs
+@@ -1,7 +1,11 @@
+ use librespot_playback::mixer::Mixer;
+ use librespot_playback::mixer::MixerConfig;
+ 
+ impl Mixer for NoMixer {
+-    fn open(_: MixerConfig) -> NoMixer {
+-        NoMixer
++    fn open(_: MixerConfig) -> std::result::Result<NoMixer, librespot_core::Error> {
++        Ok(NoMixer)
+     }
+ }

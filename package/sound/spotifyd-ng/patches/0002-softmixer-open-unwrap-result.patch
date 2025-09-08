@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: CI <ci@example.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 2/6] setup: unwrap Result from SoftMixer::open before Arc
+
+--- a/src/setup.rs
++++ b/src/setup.rs
+@@ -40,10 +40,18 @@ use std::sync::Arc;
+ pub fn build_mixer(...) -> Arc<dyn librespot_playback::mixer::Mixer> {
+-    // Sebelumnya: mengembalikan Arc<Result<..>> yang tidak mengimplementasikan Mixer
+-    Arc::new(mixer::softmixer::SoftMixer::open(MixerConfig::default()))
++    // Di librespot 0.7.x, Mixer::open() -> Result<_, librespot_core::Error>
++    // Ambil nilainya lebih dulu baru bungkus ke Arc<dyn Mixer>
++    {
++        let soft = mixer::softmixer::SoftMixer::open(MixerConfig::default())
++            .expect("softmixer open failed");
++        Arc::new(soft) as Arc<dyn librespot_playback::mixer::Mixer>
++    }
+ }

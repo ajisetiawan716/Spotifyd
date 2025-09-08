@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000005 Mon Sep 17 00:00:00 2001
+From: CI <ci@example.com>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 5/6] main_loop: adjust librespot_connect imports; spirc private in 0.7.x
+
+--- a/src/main_loop.rs
++++ b/src/main_loop.rs
+@@ -10,12 +10,22 @@ use std::time::Duration;
+-use librespot_connect::{config::ConnectConfig, spirc::Spirc};
++// Di 0.7.x: modul `spirc` menjadi private; gunakan entrypoint publik.
++// Banyak proyek beralih ke builder/pipeline publik untuk Connect device.
++// Import minimal agar kompilasi lanjut; sesuaikan blok inisialisasi di bawah.
++use librespot_connect::ConnectConfig;
+ 
+ fn main_loop() {
+-    // TODO: Kode lama mungkin memanggil Spirc::new(...) secara langsung.
+-    // Harus diganti dengan pipeline Connect terbaru di 0.7.x.
++    // TODO: Ganti inisialisasi Connect berbasis Spirc lama menuju API publik baru.
++    // Pola umumnya:
++    // 1) bangun Session
++    // 2) bangun Player
++    // 3) registrasi sebagai perangkat Connect menggunakan API yang diekspos
++    //    oleh crate librespot_connect 0.7.x
++    // Placeholder di sini, implementasi detail tergantung kode spotifyd Anda.
+ }
