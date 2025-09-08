@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'packages/**'
+      - 'src/**'
       - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
