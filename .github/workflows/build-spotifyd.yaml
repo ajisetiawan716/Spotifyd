@@ -148,96 +148,49 @@ jobs:
           echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "ALSA library built and installed"
 
-      - name: Build OpenSSL from source properly
+      - name: Check OpenSSL in toolchain
         run: |
           set -eux
-          echo "Building OpenSSL for $TARGET_ARCH..."
+          echo "Checking for OpenSSL in toolchain..."
           
-          # Download OpenSSL source
-          curl -fsSL https://www.openssl.org/source/openssl-1.1.1w.tar.gz -o openssl.tar.gz
-          tar -xf openssl.tar.gz
-          cd openssl-1.1.1w
+          # Cek apakah toolchain sudah include OpenSSL
+          echo "=== TOOLCHAIN OPENSSL FILES ==="
+          find $TOOLCHAIN_DIR -name "*ssl*" -type f | head -20 || echo "No SSL files found"
+          find $TOOLCHAIN_DIR -name "*crypto*" -type f | head -20 || echo "No crypto files found"
+          find $TOOLCHAIN_DIR -name "openssl*" -type f | head -20 || echo "No openssl files found"
           
-          # Determine the correct target and cross-compile prefix
-          if [ "${{ matrix.target }}" = "x86_64" ]; then
-            TARGET_OS="linux-x86_64"
-            CROSS_PREFIX="x86_64-openwrt-linux-"
-          else
-            TARGET_OS="linux-aarch64"
-            CROSS_PREFIX="aarch64-openwrt-linux-"
-          fi
+          echo "=== TOOLCHAIN LIBRARIES ==="
+          ls -la $TOOLCHAIN_DIR/usr/lib/libssl* 2>/dev/null || echo "No SSL libraries in toolchain"
+          ls -la $TOOLCHAIN_DIR/usr/lib/libcrypto* 2>/dev/null || echo "No crypto libraries in toolchain"
           
-          # Configure untuk cross-compilation dengan environment yang benar
-          export STAGING_DIR="$TOOLCHAIN_DIR"
-          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          
-          ./Configure \
-            $TARGET_OS \
-            no-shared \
-            no-zlib \
-            no-async \
-            --prefix=$TOOLCHAIN_DIR/usr \
-            --openssldir=$TOOLCHAIN_DIR/usr \
-            --cross-compile-prefix=$CROSS_PREFIX \
-            -fPIC \
-            -static
-          
-          make -j$(nproc)
-          make install
-          
-          echo "OpenSSL built and installed"
+          echo "=== TOOLCHAIN HEADERS ==="
+          ls -la $TOOLCHAIN_DIR/usr/include/openssl/ 2>/dev/null || echo "No OpenSSL headers in toolchain"
 
-      - name: Setup environment variables
+      - name: Setup environment for vendored OpenSSL
         run: |
           set -eux
+          echo "Setting up environment for vendored OpenSSL build..."
           
-          # Setup pkg-config
+          # Setup pkg-config environment
           export PKG_CONFIG_ALLOW_CROSS=1
           export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
           export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           
-          # Setup OpenSSL
-          export OPENSSL_DIR="$TOOLCHAIN_DIR/usr"
-          export OPENSSL_LIB_DIR="$TOOLCHAIN_DIR/usr/lib"
-          export OPENSSL_INCLUDE_DIR="$TOOLCHAIN_DIR/usr/include"
+          # Force vendored OpenSSL
           export OPENSSL_STATIC=1
-          
-          # Setup staging directory untuk toolchain
-          export STAGING_DIR="$TOOLCHAIN_DIR"
+          export OPENSSL_NO_VENDOR=0
+          export OPENSSL_DIR="/tmp/openssl"  # Dummy directory
           
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=/tmp/openssl" >> $GITHUB_ENV
 
-      - name: Verify OpenSSL installation
-        run: |
-          set -eux
-          echo "=== VERIFYING OPENSSL INSTALLATION ==="
-          echo "OPENSSL_DIR: $OPENSSL_DIR"
-          echo "OPENSSL_LIB_DIR: $OPENSSL_LIB_DIR"
-          echo "OPENSSL_INCLUDE_DIR: $OPENSSL_INCLUDE_DIR"
-          
-          echo "=== OPENSSL HEADERS ==="
-          ls -la $OPENSSL_INCLUDE_DIR/openssl/ || echo "No openssl headers found"
-          
-          echo "=== OPENSSL LIBRARIES ==="
-          ls -la $OPENSSL_LIB_DIR/libssl* || echo "No ssl libraries found"
-          ls -la $OPENSSL_LIB_DIR/libcrypto* || echo "No crypto libraries found"
-          
-          echo "=== PKG-CONFIG TEST ==="
-          PKG_CONFIG_ALLOW_CROSS=1 \
-          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig" \
-          pkg-config --exists --print-errors openssl && echo "✅ OpenSSL found via pkg-config" || echo "❌ OpenSSL not found via pkg-config"
-
-      - name: Force librespot v0.7.1
+      - name: Force librespot v0.7.1 with vendored openssl
         run: |
           set -eux
           cd spotifyd-src
@@ -245,51 +198,78 @@ jobs:
           # Backup original Cargo.toml
           cp Cargo.toml Cargo.toml.original
             
-          # Modifikasi dependency librespot
-          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
-          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
-          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
-          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          # Cek existing dependencies
+          echo "=== CHECKING EXISTING DEPENDENCIES ==="
+          grep -n "librespot" Cargo.toml || echo "No librespot dependencies found in original Cargo.toml"
+            
+          # Modifikasi dependency librespot dengan vendored openssl
+          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["with-alsa", "with-dns-sd", "vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false, features = ["with-alsa", "with-dns-sd", "vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
+          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", features = ["vendored-openssl"] }|g' Cargo.toml
           
+          # Pastikan openssl-sys menggunakan vendored
+          sed -i 's|openssl-sys =.*|openssl-sys = { version = "0.9", features = ["vendored"] }|g' Cargo.toml || echo "openssl-sys dependency not found, adding manually"
+          
+          # Jika openssl-sys tidak ada, tambahkan manual
+          if ! grep -q "openssl-sys" Cargo.toml; then
+            echo 'openssl-sys = { version = "0.9", features = ["vendored"] }' >> Cargo.toml
+          fi
+            
           # Hapus Cargo.lock untuk memaksa resolusi dependency baru
           rm -f Cargo.lock
             
           # Verifikasi perubahan
           echo "=== VERIFYING DEPENDENCY CHANGES ==="
+          echo "Modified librespot dependencies:"
           grep -A 2 -B 1 "librespot" Cargo.toml
+          echo "openssl-sys dependency:"
+          grep -A 1 -B 1 "openssl-sys" Cargo.toml
             
           # Update dependencies
           cargo update --verbose
 
-      - name: Build spotifyd
+      - name: Install build dependencies for vendored OpenSSL
+        run: |
+          set -eux
+          echo "Installing dependencies for vendored OpenSSL build..."
+          sudo apt-get install -y --no-install-recommends \
+            perl \
+            make \
+            gcc \
+            libc6-dev
+
+      - name: Build spotifyd with vendored OpenSSL
         run: |
           set -eux
           cd spotifyd-src
             
-          echo "Building spotifyd..."
+          echo "Building spotifyd with vendored OpenSSL..."
           
-          # Export semua environment variables yang diperlukan
+          # Setup environment untuk vendored build
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          export STAGING_DIR="$TOOLCHAIN_DIR"
+          export CC="$CC"
+          export AR="$AR"
+          export RANLIB="$RANLIB"
+          export STRIP="$STRIP"
           
           # RUSTFLAGS untuk linker
-          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m -l ssl -l crypto"
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
             
-          # Build dengan environment yang tepat
+          # Build dengan vendored OpenSSL
           CARGO_HOME="$HOME/.cargo" \
           RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
           PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$PKG_CONFIG_PATH" \
-          OPENSSL_DIR="$OPENSSL_DIR" \
-          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
-          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
           OPENSSL_STATIC=1 \
-          STAGING_DIR="$STAGING_DIR" \
+          OPENSSL_NO_VENDOR=0 \
+          CC="$CC" \
+          AR="$AR" \
           cargo build \
             --release \
             --no-default-features \
@@ -312,6 +292,14 @@ jobs:
           
           echo "Binary size:"
           ls -la target/$CARGO_TARGET/release/spotifyd
+
+          echo "=== CHECKING OPENSSL LINKAGE ==="
+          # Check if OpenSSL symbols are present
+          if readelf -s target/$CARGO_TARGET/release/spotifyd | grep -q "SSL"; then
+            echo "✅ OpenSSL symbols found in binary"
+          else
+            echo "⚠️  OpenSSL symbols not found"
+          fi
 
       - name: Create OpenWRT package
         run: |
