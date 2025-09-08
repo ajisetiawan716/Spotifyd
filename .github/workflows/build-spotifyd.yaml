@@ -34,7 +34,199 @@ jobs:
           ref: v0.4.1
           path: spotifyd-src
 
-      - name: Apply librespot patch
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl wget \
+            xz-utils tar python3 python3-distutils \
+            libncurses-dev unzip rsync gawk gettext \
+            musl-tools pkg-config libssl-dev \
+            libasound2-dev autoconf automake libtool
+
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source $HOME/.cargo/env
+          rustc --version
+          cargo --version
+
+      - name: Download OpenWRT toolchain
+        run: |
+          set -eux
+          echo "Downloading toolchain for ${{ matrix.target }}..."
+          echo "URL: ${{ matrix.toolchain_url }}"
+          curl -fsSL "${{ matrix.toolchain_url }}" -o toolchain.tar.xz
+          mkdir -p /tmp/sdk-extract
+          tar -xf toolchain.tar.xz -C /tmp/sdk-extract
+          SDK_DIR=$(find /tmp/sdk-extract -name "openwrt-sdk-*" -type d | head -1)
+          if [ -z "$SDK_DIR" ]; then
+            echo "❌ Could not find SDK directory"
+            ls -la /tmp/sdk-extract/
+            exit 1
+          fi
+          echo "SDK found at: $SDK_DIR"
+          export TOOLCHAIN_DIR="$SDK_DIR/staging_dir/${{ matrix.toolchain_dir }}"
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
+
+      - name: Setup cross-compilation environment
+        run: |
+          set -eux
+          echo "Setting up cross-compilation for ${{ matrix.target }}"
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
+          CC=$(find "$TOOLCHAIN_DIR/bin" -name "*-gcc" | head -1)
+          AR=$(find "$TOOLCHAIN_DIR/bin" -name "*-ar" | head -1)
+          STRIP=$(find "$TOOLCHAIN_DIR/bin" -name "*-strip" | head -1)
+          RANLIB=$(find "$TOOLCHAIN_DIR/bin" -name "*-ranlib" | head -1)
+          if [ -z "$CC" ] || [ -z "$AR" ]; then
+            echo "❌ Could not find compiler tools"
+            echo "Looking in: $TOOLCHAIN_DIR/bin/"
+            ls -la "$TOOLCHAIN_DIR/bin/" || echo "Directory not found"
+            exit 1
+          fi
+          echo "Found CC: $CC"
+          echo "Found AR: $AR"
+          echo "Found STRIP: $STRIP"
+          echo "Found RANLIB: $RANLIB"
+          if [ "${{ matrix.target }}" = "x86_64" ]; then
+            export CARGO_TARGET=x86_64-unknown-linux-musl
+            export TARGET_ARCH=x86_64
+          else
+            export CARGO_TARGET=aarch64-unknown-linux-musl
+            export TARGET_ARCH=aarch64
+          fi
+          rustup target add $CARGO_TARGET
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
+          echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
+          echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
+
+      - name: Build ALSA library from source
+        run: |
+          set -eux
+          echo "Building ALSA library for $TARGET_ARCH..."
+          curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa-lib.tar.bz2
+          tar -xf alsa-lib.tar.bz2
+          cd alsa-lib-1.2.11
+          ./configure \
+            --host=$TARGET_ARCH-linux-musl \
+            --prefix=$TOOLCHAIN_DIR/usr \
+            --enable-static \
+            --disable-shared \
+            --with-pic \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            STRIP="$STRIP" \
+            --with-libdl=no \
+            --with-pthread=yes
+          make -j$(nproc)
+          make install
+          mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
+          echo "prefix=$TOOLCHAIN_DIR/usr" > $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "exec_prefix=\${prefix}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "libdir=\${exec_prefix}/lib" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "includedir=\${prefix}/include" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Name: alsa" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Version: 1.2.11" >> $TOOLchAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Requires: " >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Libs: -L\${libdir} -lasound" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Libs.private: -lm -ldl -lpthread" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "ALSA library built and installed"
+
+      - name: Setup pkg-config environment
+        run: |
+          set -eux
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
+          export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
+
+      - name: Patch and build spotifyd
+        run: |
+          set -eux
+          cd spotifyd-src
+          
+          # Remove existing Cargo.lock to force fresh resolution
+          rm -f Cargo.lock
+          
+          # Apply patch by directly modifying dependency version
+          sed -i 's/^librespot =.*/librespot = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
+          
+          # Force update with precise package
+          cargo update -p librespot
+          
+          # Verify patch
+          echo "=== VERIFYING PATCH ==="
+          cargo tree | grep librespot || echo "Librespot not found in tree"
+          
+          echo "Building spotifyd..."
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
+          
+          CARGO_HOME="$HOME/.cargo" \
+          RUSTFLAGS="$RUSTFLAGS" \
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          cargo build \
+            --release \
+            --no-default-features \
+            --features alsa_backend \
+            --target $CARGO_TARGET
+          
+          $STRIP target/$CARGO_TARGET/release/spotifyd
+          echo "✅ Build completed successfully"
+
+      - name: Create OpenWRT package
+        run: |
+          set -eux
+          mkdir -p spotifyd-ng_control
+          echo "Package: spotifyd-ng" > spotifyd-ng_control/control
+          echo "Version: 0.4.1-1" >> spotifyd-ng_control/control
+          echo "Depends: libc, libstdcpp, libpthread" >> spotifyd-ng_control/control
+          echo "Source: https://github.com/Spotifyd/spotifyd" >> spotifyd-ng_control/control
+          echo "Section: sound" >> spotifyd-ng_control/control
+          echo "Category: Sound" >> spotifyd-ng_control/control
+          echo "Title: Spotify daemon" >> spotifyd-ng_control/control
+          echo "Maintainer: Build Bot <noreply@github.com>" >> spotifyd-ng_control/control
+          echo "Architecture: ${{ matrix.arch }}" >> spotifyd-ng_control/control
+          echo "Description: A spotify playing daemon for OpenWrt." >> spotifyd-ng_control/control
+          mkdir -p spotifyd-ng_data/usr/bin
+          cp spotifyd-src/target/$CARGO_TARGET/release/spotifyd spotifyd-ng_data/usr/bin/
+          chmod +x spotifyd-ng_data/usr/bin/spotifyd
+          cd spotifyd-ng_data && tar -czf ../data.tar.gz . && cd ..
+          cd spotifyd-ng_control && tar -czf ../control.tar.gz . && cd ..
+          echo "2.0" > debian-binary
+          tar -czf spotifyd-ng_${{ matrix.arch }}.ipk ./debian-binary ./data.tar.gz ./control.tar.gz
+          mkdir -p output/${{ matrix.target }}
+          mv spotifyd-ng_${{ matrix.arch }}.ipk output/${{ matrix.target }}/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotifyd-${{ matrix.target }}-ipk
+          path: output/${{ matrix.target }}/
+          if-no-files-found: error
+
+      - name: Verify package
+        run: |
+          echo "=== PACKAGE VERIFICATION ==="
+          echo "Binary info:"
+          file spotifyd-src/target/$CARGO_TARGET/release/spotifyd
+          echo "Package contents:"
+          tar -ztvf output/${{ matrix.target }}/*.ipk || echo "Package not found"      - name: Apply librespot patch
         run: |
           set -eux
           cd spotifyd-src
