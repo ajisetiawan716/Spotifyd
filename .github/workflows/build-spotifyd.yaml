@@ -209,43 +209,6 @@ jobs:
           cargo tree -p librespot-core --depth=0 || echo "librespot-core not found"
           cargo tree -p librespot-audio --depth=0 || echo "librespot-audio not found"
 
-      - name: Build spotifyd with vendored openssl
-        run: |
-          set -eux
-          cd spotifyd-src
-            
-          echo "Building spotifyd with vendored OpenSSL..."
-            
-          # Set environment variables untuk OpenSSL
-          export OPENSSL_DIR=$TOOLCHAIN_DIR/usr
-          export OPENSSL_LIB_DIR=$TOOLCHAIN_DIR/usr/lib
-          export OPENSSL_INCLUDE_DIR=$TOOLCHAIN_DIR/usr/include
-            
-          # Gunakan vendored openssl
-          export OPENSSL_NO_VENDOR=0
-          export OPENSSL_STATIC=1
-            
-          # RUSTFLAGS untuk linker
-          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m -l ssl -l crypto"
-            
-          CARGO_HOME="$HOME/.cargo" \
-          RUSTFLAGS="$RUSTFLAGS" \
-          PKG_CONFIG_ALLOW_CROSS=1 \
-          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$PKG_CONFIG_PATH" \
-          OPENSSL_DIR="$OPENSSL_DIR" \
-          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
-          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
-          OPENSSL_NO_VENDOR=0 \
-          OPENSSL_STATIC=1 \
-          cargo build \
-            --release \
-            --no-default-features \
-            --features alsa_backend,vendored-openssl \
-            --target $CARGO_TARGET
-            
-          $STRIP target/$CARGO_TARGET/release/spotifyd
-
       - name: Verify build and dependencies
         run: |
           set -eux
