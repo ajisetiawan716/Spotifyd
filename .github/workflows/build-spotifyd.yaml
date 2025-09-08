@@ -42,7 +42,8 @@ jobs:
             xz-utils tar python3 python3-distutils \
             libncurses-dev unzip rsync gawk gettext \
             musl-tools pkg-config libssl-dev \
-            libasound2-dev autoconf automake libtool
+            libasound2-dev autoconf automake libtool \
+            openssl libssl-dev
 
       - name: Install Rust toolchain
         run: |
@@ -81,16 +82,19 @@ jobs:
           AR=$(find "$TOOLCHAIN_DIR/bin" -name "*-ar" | head -1)
           STRIP=$(find "$TOOLCHAIN_DIR/bin" -name "*-strip" | head -1)
           RANLIB=$(find "$TOOLCHAIN_DIR/bin" -name "*-ranlib" | head -1)
+          
           if [ -z "$CC" ] || [ -z "$AR" ]; then
             echo "❌ Could not find compiler tools"
             echo "Looking in: $TOOLCHAIN_DIR/bin/"
             ls -la "$TOOLCHAIN_DIR/bin/" || echo "Directory not found"
             exit 1
           fi
+          
           echo "Found CC: $CC"
           echo "Found AR: $AR"
           echo "Found STRIP: $STRIP"
           echo "Found RANLIB: $RANLIB"
+          
           if [ "${{ matrix.target }}" = "x86_64" ]; then
             export CARGO_TARGET=x86_64-unknown-linux-musl
             export TARGET_ARCH=x86_64
@@ -98,13 +102,58 @@ jobs:
             export CARGO_TARGET=aarch64-unknown-linux-musl
             export TARGET_ARCH=aarch64
           fi
+          
           rustup target add $CARGO_TARGET
+          
           echo "CC=$CC" >> $GITHUB_ENV
           echo "AR=$AR" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
           echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
+
+      - name: Build and install OpenSSL for cross-compilation
+        run: |
+          set -eux
+          echo "Building OpenSSL for $TARGET_ARCH..."
+          
+          # Download OpenSSL source
+          curl -fsSL https://www.openssl.org/source/openssl-1.1.1w.tar.gz -o openssl.tar.gz
+          tar -xf openssl.tar.gz
+          cd openssl-1.1.1w
+          
+          # Configure for cross-compilation
+          ./Configure \
+            linux-$(if [ "$TARGET_ARCH" = "x86_64" ]; then echo "x86_64"; else echo "aarch64"; fi) \
+            no-shared \
+            no-zlib \
+            no-dso \
+            --prefix=$TOOLCHAIN_DIR/usr \
+            --openssldir=$TOOLCHAIN_DIR/usr/ssl \
+            --cross-compile-prefix=$TARGET_ARCH-linux-musl-
+          
+          # Build and install
+          make -j$(nproc)
+          make install_sw
+          
+          # Create pkg-config file
+          mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
+          cat > $TOOLCHAIN_DIR/usr/lib/pkgconfig/openssl.pc << EOF
+prefix=$TOOLCHAIN_DIR/usr
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: OpenSSL
+Description: Secure Sockets Layer and cryptography libraries and tools
+Version: 1.1.1w
+Requires: 
+Libs: -L\${libdir} -lssl -lcrypto
+Libs.private: -ldl -pthread 
+Cflags: -I\${includedir}
+EOF
+          
+          echo "OpenSSL built and installed"
 
       - name: Build ALSA library from source
         run: |
@@ -142,17 +191,37 @@ jobs:
           echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "ALSA library built and installed"
 
-      - name: Setup pkg-config environment
+      - name: Setup pkg-config and OpenSSL environment
         run: |
           set -eux
+          
+          # Set pkg-config paths
           export PKG_CONFIG_ALLOW_CROSS=1
           export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
           export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          
+          # Set OpenSSL environment variables
+          export OPENSSL_DIR="$TOOLCHAIN_DIR/usr"
+          export OPENSSL_STATIC=1
+          export OPENSSL_LIB_DIR="$TOOLCHAIN_DIR/usr/lib"
+          export OPENSSL_INCLUDE_DIR="$TOOLCHAIN_DIR/usr/include"
+          
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
+          
+          # Test pkg-config
+          echo "Testing pkg-config for openssl..."
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          pkg-config --exists --print-errors openssl || echo "OpenSSL not found via pkg-config"
 
       - name: Force librespot patch with direct dependency modification
         run: |
@@ -163,61 +232,36 @@ jobs:
           rm -f Cargo.lock
           rm -rf target
           
-          # Backup original Cargo.toml
-          cp Cargo.toml Cargo.toml.original
-          
-          # Directly modify version requirements in dependencies section
-          # First, find and replace all librespot dependencies
-          sed -i 's/^librespot =.*/librespot = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-core =.*/librespot-core = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-audio =.*/librespot-audio = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-protocol =.*/librespot-protocol = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-connect =.*/librespot-connect = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-playback =.*/librespot-playback = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-discovery =.*/librespot-discovery = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-metadata =.*/librespot-metadata = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          sed -i 's/^librespot-oauth =.*/librespot-oauth = { git = "https:\/\/github.com\/librespot-org\/librespot.git", tag = "v0.7.1" }/' Cargo.toml
-          
-          # Remove any existing patch section to avoid conflicts
-          sed -i '/^\[patch.crates-io\]/,/^$/d' Cargo.toml
-          
-          # Force full dependency resolution with verbose output
+          # Force full dependency resolution
           cargo update --verbose
-          
-          # Verify patch application
-          echo "=== VERIFYING PATCH APPLICATION ==="
-          echo "Modified dependencies in Cargo.toml:"
-          grep -n "librespot" Cargo.toml
-          echo ""
-          echo "Cargo.lock entries (looking for git sources):"
-          grep -A 2 -B 1 "git.*librespot" Cargo.lock || echo "No git dependencies found in Cargo.lock"
-          echo ""
-          echo "All librespot entries in Cargo.lock:"
-          grep -A 3 -B 1 "name = \"librespot" Cargo.lock || echo "No librespot entries in Cargo.lock"
 
-      - name: Build spotifyd with static ALSA
+      - name: Build spotifyd with static linking
         run: |
           set -eux
           cd spotifyd-src
           
-          echo "Building spotifyd with static ALSA linking..."
+          echo "Building spotifyd with static linking..."
           echo "CC: $CC"
           echo "AR: $AR"
           echo "Target: $CARGO_TARGET"
+          echo "OPENSSL_DIR: $OPENSSL_DIR"
           
-          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l ssl -l crypto -l asound -l dl -l pthread -l m"
           
           CARGO_HOME="$HOME/.cargo" \
           RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
           PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          OPENSSL_DIR="$OPENSSL_DIR" \
+          OPENSSL_STATIC=1 \
+          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
+          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
           cargo build \
             --release \
             --no-default-features \
             --features alsa_backend \
-            --target $CARGO_TARGET \
-            --verbose
+            --target $CARGO_TARGET
           
           $STRIP target/$CARGO_TARGET/release/spotifyd
 
@@ -230,11 +274,11 @@ jobs:
           echo "Binary info:"
           file target/$CARGO_TARGET/release/spotifyd
           
+          echo "Binary dependencies:"
+          ldd target/$CARGO_TARGET/release/spotifyd 2>/dev/null || echo "Binary is statically linked"
+          
           echo "Binary size:"
           ls -la target/$CARGO_TARGET/release/spotifyd
-          
-          echo "Checking for librespot version in binary:"
-          strings target/$CARGO_TARGET/release/spotifyd | grep -i librespot | head -5 || echo "No librespot strings found"
 
       - name: Create OpenWRT package
         run: |
