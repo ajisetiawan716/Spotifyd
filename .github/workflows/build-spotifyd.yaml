@@ -42,7 +42,7 @@ jobs:
           # Apply librespot patch
           sed -i '/^\[patch.crates-io\]/,/^$/d' Cargo.toml
           echo '[patch.crates-io]' >> Cargo.toml
-          echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", rev = "be37402" }' >> Cargo.toml
+          echo 'librespot = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }' >> Cargo.toml
           
           echo "✅ Librespot patch applied"
 
