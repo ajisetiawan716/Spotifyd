@@ -1,4 +1,4 @@
-name: build-spotifyd-openwrt-standalone
+name: Build Spotifyd Patch-Try
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: build-spotifyd-openwrt-standalone
+name: Build Spotifyd
 
 on:
   workflow_dispatch:
