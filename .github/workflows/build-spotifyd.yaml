@@ -3,7 +3,7 @@ name: Build Spotifyd
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
       - 'src/**'
       - '.github/workflows/build-spotifyd.yaml'
@@ -161,7 +161,7 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
-          
+
       - name: Force librespot v0.7.1 by modifying dependencies directly
         run: |
           set -eux
@@ -208,7 +208,7 @@ jobs:
           echo "=== VERIFYING VERSION 0.7.1 USAGE ==="
           cargo tree -p librespot-core --depth=0 || echo "librespot-core not found"
           cargo tree -p librespot-audio --depth=0 || echo "librespot-audio not found"
-      
+
       - name: Build spotifyd with vendored openssl
         run: |
           set -eux
@@ -244,7 +244,7 @@ jobs:
             --features alsa_backend,vendored-openssl \
             --target $CARGO_TARGET
             
-         $STRIP target/$CARGO_TARGET/release/spotifyd
+          $STRIP target/$CARGO_TARGET/release/spotifyd
 
       - name: Verify build and dependencies
         run: |
@@ -277,7 +277,7 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
           PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig" \
-          pkg-config --exists --print-errors openssl && echo "OpenSSL found via pkg-config" || echo "OpenSSL not found via pkg-config"          
+          pkg-config --exists --print-errors openssl && echo "OpenSSL found via pkg-config" || echo "OpenSSL not found via pkg-config"
 
       - name: Create OpenWRT package
         run: |
