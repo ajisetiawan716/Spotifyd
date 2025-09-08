@@ -135,7 +135,7 @@ jobs:
           echo "" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "Name: alsa" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Version: 1.2.11" >> $TOOLchAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Version: 1.2.11" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "Requires: " >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "Libs: -L\${libdir} -lasound" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
           echo "Libs.private: -lm -ldl -lpthread" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
