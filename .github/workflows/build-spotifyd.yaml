@@ -172,7 +172,8 @@ jobs:
         run: |
           set -eux
           cd spotifyd-src
-          cargo update
+          rm -f Cargo.lock
+          cargo update -p librespot
           echo "✅ Cargo dependencies force updated"
 
       - name: Build spotifyd with static ALSA
