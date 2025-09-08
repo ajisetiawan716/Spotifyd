@@ -112,6 +112,42 @@ jobs:
           echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
           echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
 
+      - name: Build ALSA library from source
+        run: |
+          set -eux
+          echo "Building ALSA library for $TARGET_ARCH..."
+          curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa-lib.tar.bz2
+          tar -xf alsa-lib.tar.bz2
+          cd alsa-lib-1.2.11
+          ./configure \
+            --host=$TARGET_ARCH-linux-musl \
+            --prefix=$TOOLCHAIN_DIR/usr \
+            --enable-static \
+            --disable-shared \
+            --with-pic \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            STRIP="$STRIP" \
+            --with-libdl=no \
+            --with-pthread=yes
+          make -j$(nproc)
+          make install
+          mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
+          echo "prefix=$TOOLCHAIN_DIR/usr" > $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "exec_prefix=\${prefix}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "libdir=\${exec_prefix}/lib" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "includedir=\${prefix}/include" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Name: alsa" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Version: 1.2.11" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Requires: " >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Libs: -L\${libdir} -lasound" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Libs.private: -lm -ldl -lpthread" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "ALSA library built and installed"
+
       - name: Setup pkg-config environment
         run: |
           set -eux
@@ -125,6 +161,12 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
+          
+          echo "Testing pkg-config for alsa..."
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          pkg-config --exists --print-errors alsa || echo "ALSA not found via pkg-config, but we'll proceed anyway"
 
       - name: Force librespot v0.7.1 patch
         run: |
@@ -164,30 +206,38 @@ jobs:
           grep -A 2 -B 1 "librespot.*git" Cargo.lock || echo "No git dependencies found - checking all librespot:"
           grep -A 2 -B 1 "name = \"librespot" Cargo.lock || echo "No librespot entries in Cargo.lock"
 
-      - name: Build spotifyd with vendored OpenSSL
+      - name: Build spotifyd with static linking
         run: |
           set -eux
           cd spotifyd-src
           
-          echo "Building spotifyd with vendored OpenSSL..."
+          echo "Building spotifyd with static linking..."
           echo "CC: $CC"
           echo "AR: $AR"
           echo "Target: $CARGO_TARGET"
           
-          # Use vendored OpenSSL feature to avoid cross-compilation issues
+          # Use system OpenSSL and static linking
           export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
+          
+          # Set OpenSSL environment variables to use system OpenSSL
+          export OPENSSL_DIR="/usr"
+          export OPENSSL_STATIC=1
+          export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu"
+          export OPENSSL_INCLUDE_DIR="/usr/include"
           
           CARGO_HOME="$HOME/.cargo" \
           RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
           PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
-          OPENSSL_DIR="$TOOLCHAIN_DIR/usr" \
+          OPENSSL_DIR="$OPENSSL_DIR" \
           OPENSSL_STATIC=1 \
+          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
+          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
           cargo build \
             --release \
             --no-default-features \
-            --features alsa_backend,vendored-openssl \
+            --features alsa_backend \
             --target $CARGO_TARGET
           
           $STRIP target/$CARGO_TARGET/release/spotifyd
