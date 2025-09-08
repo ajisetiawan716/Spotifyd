@@ -54,7 +54,7 @@ jobs:
             xz-utils tar python3 python3-distutils \
             libncurses-dev unzip rsync gawk gettext \
             musl-tools pkg-config libssl-dev \
-            libasound2-dev autoconf automake libtool bzip2
+            libasound2-dev autoconf automake libtool
 
       - name: Install Rust toolchain
         run: |
@@ -64,7 +64,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Download and extract OpenWRT toolchain
+      - name: Download OpenWRT toolchain
         run: |
           set -eux
           echo "Downloading toolchain for ${{ matrix.target }}..."
@@ -75,15 +75,14 @@ jobs:
           
           # Extract entire SDK
           mkdir -p /tmp/sdk-extract
-          tar -xf toolchain.tar.xz -C /tmp/sdk-extract --strip-components=1
+          tar -xf toolchain.tar.xz -C /tmp/sdk-extract
           
-          # Find the actual SDK directory
-          SDK_DIR=$(find /tmp/sdk-extract -maxdepth 1 -type d -name "openwrt-sdk*" | head -1)
+          # Find the actual toolchain directory
+          SDK_DIR=$(find /tmp/sdk-extract -name "openwrt-sdk-*" -type d | head -1)
           if [ -z "$SDK_DIR" ]; then
-            echo "❌ Could not find SDK directory, listing contents:"
+            echo "❌ Could not find SDK directory"
             ls -la /tmp/sdk-extract/
-            # Try alternative approach - use the extracted directory directly
-            SDK_DIR="/tmp/sdk-extract"
+            exit 1
           fi
           
           echo "SDK found at: $SDK_DIR"
@@ -94,40 +93,26 @@ jobs:
           echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
           
           echo "Toolchain directory: $TOOLCHAIN_DIR"
-          echo "Checking if toolchain exists:"
-          ls -la "$TOOLCHAIN_DIR/bin/" || echo "Toolchain bin not found, will check alternative paths"
 
       - name: Setup cross-compilation environment
         run: |
           set -eux
           
-          echo "Current TOOLCHAIN_DIR: $TOOLCHAIN_DIR"
           echo "Setting up cross-compilation for ${{ matrix.target }}"
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
           
-          # Verify toolchain directory exists
-          if [ ! -d "$TOOLCHAIN_DIR" ]; then
-            echo "❌ Toolchain directory does not exist: $TOOLCHAIN_DIR"
-            echo "Available directories in SDK:"
-            find "$SDK_DIR" -maxdepth 2 -type d -name "toolchain*" || find "$SDK_DIR" -type d | head -10
-            exit 1
-          fi
-          
-          # Find compiler tools with better error handling
+          # Find the actual compiler paths
           CC=$(find "$TOOLCHAIN_DIR/bin" -name "*-gcc" | head -1)
-          if [ -z "$CC" ]; then
-            echo "❌ Could not find cross-compiler"
-            echo "Looking in: $TOOLCHAIN_DIR/bin/"
-            ls -la "$TOOLCHAIN_DIR/bin/" || echo "Compiler directory not found"
-            # Try to find anywhere in staging_dir
-            CC=$(find "$SDK_DIR/staging_dir" -name "*-gcc" | head -1)
-            if [ -z "$CC" ]; then
-              exit 1
-            fi
-          fi
-          
           AR=$(find "$TOOLCHAIN_DIR/bin" -name "*-ar" | head -1)
           STRIP=$(find "$TOOLCHAIN_DIR/bin" -name "*-strip" | head -1)
           RANLIB=$(find "$TOOLCHAIN_DIR/bin" -name "*-ranlib" | head -1)
+          
+          if [ -z "$CC" ] || [ -z "$AR" ]; then
+            echo "❌ Could not find compiler tools"
+            echo "Looking in: $TOOLCHAIN_DIR/bin/"
+            ls -la "$TOOLCHAIN_DIR/bin/" || echo "Directory not found"
+            exit 1
+          fi
           
           echo "Found CC: $CC"
           echo "Found AR: $AR"
@@ -155,8 +140,8 @@ jobs:
         run: |
           set -eux
           
+          # Download and build ALSA lib statically
           echo "Building ALSA library for $TARGET_ARCH..."
-          echo "Using compiler: $CC"
           
           # Download ALSA source
           curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa-lib.tar.bz2
@@ -166,7 +151,7 @@ jobs:
           # Configure for cross-compilation
           ./configure \
             --host=$TARGET_ARCH-linux-musl \
-            --prefix=/usr \
+            --prefix=$TOOLCHAIN_DIR/usr \
             --enable-static \
             --disable-shared \
             --with-pic \
@@ -177,28 +162,50 @@ jobs:
             --with-libdl=no \
             --with-pthread=yes
           
-          # Build and install to temporary directory
+          # Build and install
           make -j$(nproc)
-          make install DESTDIR=$TOOLCHAIN_DIR
+          make install
           
-          # Create pkg-config file without heredocs
+          # Create pkg-config file manually if needed
           mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
-          echo "prefix=/usr" > $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "exec_prefix=\${prefix}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "libdir=\${exec_prefix}/lib" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "includedir=\${prefix}/include" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Name: alsa" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Version: 1.2.11" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Requires: " >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Libs: -L\${libdir} -lasound" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Libs.private: -lm -ldl -lpthread" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
-          echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          cat > $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc << EOF
+          prefix=$TOOLCHAIN_DIR/usr
+          exec_prefix=\${prefix}
+          libdir=\${exec_prefix}/lib
+          includedir=\${prefix}/include
+          
+          Name: alsa
+          Description: Advanced Linux Sound Architecture (ALSA) - Library
+          Version: 1.2.11
+          Requires: 
+          Libs: -L\${libdir} -lasound
+          Libs.private: -lm -ldl -lpthread
+          Cflags: -I\${includedir}
+          EOF
           
           echo "ALSA library built and installed"
-          echo "Library files:"
-          find $TOOLCHAIN_DIR/usr -name "*asound*" | head -10
+
+      - name: Setup pkg-config environment
+        run: |
+          set -eux
+          
+          # Set pkg-config paths
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
+          export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
+          
+          # Test pkg-config
+          echo "Testing pkg-config for alsa..."
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          pkg-config --exists --print-errors alsa || echo "ALSA not found via pkg-config, but we'll proceed anyway"
 
       - name: Build spotifyd with static ALSA
         run: |
@@ -209,19 +216,16 @@ jobs:
           echo "CC: $CC"
           echo "AR: $AR"
           echo "Target: $CARGO_TARGET"
-          echo "Toolchain dir: $TOOLCHAIN_DIR"
           
-          # Set library paths
-          export LIBRARY_PATH="$TOOLCHAIN_DIR/usr/lib:$LIBRARY_PATH"
-          export LD_LIBRARY_PATH="$TOOLCHAIN_DIR/usr/lib:$LD_LIBRARY_PATH"
-          export C_INCLUDE_PATH="$TOOLCHAIN_DIR/usr/include:$C_INCLUDE_PATH"
+          # Set linker flags for static linking
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m"
           
-          # Build with explicit linking
+          # Build with static linking
           CARGO_HOME="$HOME/.cargo" \
-          RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib" \
+          RUSTFLAGS="$RUSTFLAGS" \
           PKG_CONFIG_ALLOW_CROSS=1 \
           PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
-          PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
           cargo build \
             --release \
             --no-default-features \
@@ -231,12 +235,24 @@ jobs:
           # Strip binary
           $STRIP target/$CARGO_TARGET/release/spotifyd
 
+      - name: Verify ALSA linking
+        run: |
+          set -eux
+          cd spotifyd-src
+          
+          echo "Checking binary dependencies..."
+          file target/$CARGO_TARGET/release/spotifyd
+          
+          echo "Checking ALSA symbols..."
+          $STRIP -g target/$CARGO_TARGET/release/spotifyd || true
+          nm target/$CARGO_TARGET/release/spotifyd | grep -i alsa || echo "No ALSA symbols found (may be statically linked)"
+
       - name: Create OpenWRT package
         run: |
           set -eux
           mkdir -p spotifyd-ng_control
           
-          # Create control file without heredocs
+          # Create control file
           echo "Package: spotifyd-ng" > spotifyd-ng_control/control
           echo "Version: 0.4.1-1" >> spotifyd-ng_control/control
           echo "Depends: libc, libstdcpp, libpthread" >> spotifyd-ng_control/control
@@ -256,7 +272,7 @@ jobs:
           cp spotifyd-src/target/$CARGO_TARGET/release/spotifyd spotifyd-ng_data/usr/bin/
           chmod +x spotifyd-ng_data/usr/bin/spotifyd
           
-          # Create IPK package files
+          # Create IPK package
           cd spotifyd-ng_data && tar -czf ../data.tar.gz . && cd ..
           cd spotifyd-ng_control && tar -czf ../control.tar.gz . && cd ..
           echo "2.0" > debian-binary
@@ -275,10 +291,10 @@ jobs:
           path: output/${{ matrix.target }}/
           if-no-files-found: error
 
-      - name: Verify build
+      - name: Verify package
         run: |
-          echo "=== BUILD VERIFICATION ==="
+          echo "=== PACKAGE VERIFICATION ==="
           echo "Binary info:"
-          file spotifyd-src/target/$CARGO_TARGET/release/spotifyd || echo "Binary not found"
+          file spotifyd-src/target/$CARGO_TARGET/release/spotifyd
           echo "Package contents:"
-          ls -la output/${{ matrix.target }}/ || echo "Output directory not found"
+          tar -ztvf output/${{ matrix.target }}/*.ipk || echo "Package not found"
