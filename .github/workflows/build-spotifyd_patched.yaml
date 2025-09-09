@@ -1,11 +1,11 @@
-name: Build Spotifyd
+name: Build Spotifyd Patched Directly
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'package/**'
       - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
