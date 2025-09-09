@@ -234,30 +234,31 @@ jobs:
 
           PATCH_DIR="$GITHUB_WORKSPACE/repo_root/package/sound/spotifyd-ng/patches"
 
-          # Debug kecil biar kelihatan isi repo & folder patch
-          ls -la "$GITHUB_WORKSPACE" || true
-          ls -la "$GITHUB_WORKSPACE/package" || true
-          ls -la "$GITHUB_WORKSPACE/package/sound/spotifyd-ng" || true
-          ls -la "$PATCH_DIR" || true
+          # Debug singkat
+          ls -la "$PATCH_DIR"
 
-          # Pastikan folder ada & ada file *.patch
-          test -d "$PATCH_DIR"
-          test -n "$(ls -1 "$PATCH_DIR"/*.patch 2>/dev/null)" || { echo "ERROR: No .patch files in $PATCH_DIR"; exit 1; }
-
-          # Normalisasi EOL kalau sempat ke-commit CRLF
-          find "$PATCH_DIR" -type f -name "*.patch" -exec dos2unix {} \; || true
+          # 1) Normalisasi EOL patch (tanpa dos2unix, pakai sed)
+          for p in "$PATCH_DIR"/*.patch; do
+            [ -f "$p" ] || { echo "No .patch files in $PATCH_DIR"; exit 1; }
+            sed -i 's/\r$//' "$p"
+          done
 
           cd "$GITHUB_WORKSPACE/spotifyd-src"
           rm -f Cargo.lock || true
 
-          # Apply semua patch (tanpa ubah apa pun selain ini)
-           for p in "$PATCH_DIR"/*.patch; do
-             echo "Applying $p"
-             git apply --index "$p" || patch -p1 < "$p"
-           done
+          # 2) Apply patch dengan fallback yang lebih toleran
+          for p in "$PATCH_DIR"/*.patch; do
+              echo "Applying $p"
+              # coba dengan git apply yang toleran whitespace + 3-way merge
+              if ! git apply --index --3way --whitespace=fix "$p"; then
+                # fallback ke patch(1) dengan opsi -N (jangan double-apply) dan toleransi whitespace
+                patch -p1 -N < "$p"
+              fi
+          done
 
-          # Sinkronisasi dependency setelah patch
+          # 3) Sinkronisasi dependency setelah patch
           cargo update --verbose
+
 
       - name: Build spotifyd
         run: |
