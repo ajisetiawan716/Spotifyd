@@ -1,4 +1,4 @@
-name: Build Spotifyd Work-Deepseek
+name: Build Spotifyd Work (Deepseek)
 
 on:
   workflow_dispatch:
@@ -247,16 +247,9 @@ jobs:
           sed -i 's|fn open(_: MixerConfig) -> AlsaMixer|fn open(_: MixerConfig) -> Result<AlsaMixer, librespot_core::Error>|g' src/alsa_mixer.rs
           sed -i 's|fn open(_: MixerConfig) -> NoMixer|fn open(_: MixerConfig) -> Result<NoMixer, librespot_core::Error>|g' src/no_mixer.rs
           
-          # Patch 3: Tambahkan return Ok() untuk mixer functions
-          sed -i '/fn open(_: MixerConfig) -> Result<AlsaMixer, librespot_core::Error>/,/^    }$/ {
-            /^    }$/i \
-        Ok(AlsaMixer)
-          }' src/alsa_mixer.rs
-          
-          sed -i '/fn open(_: MixerConfig) -> Result<NoMixer, librespot_core::Error>/,/^    }$/ {
-            /^    }$/i \
-        Ok(NoMixer)
-          }' src/no_mixer.rs
+          # Patch 3: Tambahkan return Ok() untuk mixer functions - FIXED
+          sed -i 's/^    }$/        Ok(AlsaMixer)\n    }/g' src/alsa_mixer.rs
+          sed -i 's/^    }$/        Ok(NoMixer)\n    }/g' src/no_mixer.rs
           
           # Patch 4: Perbaikan DeviceType (HomeThing tidak ada di v0.7.1)
           sed -i 's|DeviceType::HomeThing => LSDeviceType::HomeThing,|// DeviceType::HomeThing => LSDeviceType::HomeThing, // Removed in librespot v0.7.1|g' src/config.rs
