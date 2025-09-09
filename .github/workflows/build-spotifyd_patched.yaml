@@ -215,6 +215,16 @@ jobs:
           echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+
+      - name: Checkout patches (sparse)
+        uses: actions/checkout@v4
+        with:
+          path: repo_root
+          fetch-depth: 1
+          sparse-checkout: |
+            package/sound/spotifyd-ng/patches
+          sparse-checkout-cone: false
+
           
       - name: Apply librespot patches
         shell: bash
