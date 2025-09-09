@@ -215,19 +215,37 @@ jobs:
           echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          
       - name: Apply librespot patches
+        shell: bash
         run: |
           set -eux
-          cd spotifyd-src
+
+          PATCH_DIR="$GITHUB_WORKSPACE/package/sound/spotifyd-ng/patches"
+
+          # Debug kecil biar kelihatan isi repo & folder patch
+          ls -la "$GITHUB_WORKSPACE" || true
+          ls -la "$GITHUB_WORKSPACE/package" || true
+          ls -la "$GITHUB_WORKSPACE/package/sound/spotifyd-ng" || true
+          ls -la "$PATCH_DIR" || true
+
+          # Pastikan folder ada & ada file *.patch
+          test -d "$PATCH_DIR"
+          test -n "$(ls -1 "$PATCH_DIR"/*.patch 2>/dev/null)" || { echo "ERROR: No .patch files in $PATCH_DIR"; exit 1; }
+
+          # Normalisasi EOL kalau sempat ke-commit CRLF
+          find "$PATCH_DIR" -type f -name "*.patch" -exec dos2unix {} \; || true
+
+          cd "$GITHUB_WORKSPACE/spotifyd-src"
           rm -f Cargo.lock || true
-          if [ -d ../package/sound/spotifyd-ng/patches ]; then
-            for p in ../package/sound/spotifyd-ng/patches/*.patch; do
-              echo "Applying $p"
-              git apply --index "$p" || patch -p1 < "$p"
-            done
-          else
-            echo "No patches found at ../package/sound/spotifyd-ng/patches"; exit 1
-          fi
+
+          # Apply semua patch (tanpa ubah apa pun selain ini)
+           for p in "$PATCH_DIR"/*.patch; do
+             echo "Applying $p"
+             git apply --index "$p" || patch -p1 < "$p"
+           done
+
+          # Sinkronisasi dependency setelah patch
           cargo update --verbose
 
       - name: Build spotifyd

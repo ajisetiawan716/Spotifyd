@@ -1,4 +1,4 @@
-name: Build Spotifyd
+name: Build Spotifyd Work-Deepseek
 
 on:
   workflow_dispatch:
@@ -20,201 +20,284 @@ jobs:
           - target: x86_64
             arch: x86_64
             toolchain_url: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            toolchain_dir: x86_64-linux-musl
-            cargo_target: x86_64-unknown-linux-musl
-          - target: aarch64
-            arch: aarch64
+            toolchain_dir: toolchain-x86_64_gcc-12.3.0_musl
+          - target: aarch64_cortex-a53
+            arch: aarch64_cortex-a53
             toolchain_url: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-            toolchain_dir: aarch64-linux-musl
-            cargo_target: aarch64-unknown-linux-musl
+            toolchain_dir: toolchain-aarch64_cortex-a53_gcc-12.3.0_musl
 
     steps:
-      - name: Checkout
+      - name: Checkout spotifyd source
         uses: actions/checkout@v4
+        with:
+          repository: Spotifyd/spotifyd
+          ref: v0.4.1
+          path: spotifyd-src
 
-      - name: System deps (ALSA, OpenSSL, tools)
-        shell: bash
+      - name: Install system dependencies
         run: |
-          set -eux
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang llvm patch xz-utils tar gzip bzip2 unzip \
-            rsync git python3 gawk wget curl ca-certificates \
-            pkg-config libasound2-dev libssl-dev zlib1g-dev cmake perl \
-            dos2unix file
+            build-essential git curl wget \
+            xz-utils tar python3 python3-distutils \
+            libncurses-dev unzip rsync gawk gettext \
+            musl-tools pkg-config libssl-dev \
+            libasound2-dev autoconf automake libtool \
+            openssl cmake ninja-build
 
-      - name: Rust toolchain (host)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.82.0
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source $HOME/.cargo/env
+          rustc --version
+          cargo --version
 
-      - name: Download toolchain SDK
-        shell: bash
+      - name: Download OpenWRT toolchain
         run: |
           set -eux
-          mkdir -p _sdk
-          cd _sdk
-          echo "Downloading: ${{ matrix.toolchain_url }}"
-          curl -fsSL "${{ matrix.toolchain_url }}" -o sdk.tar.xz
-          tar -xJf sdk.tar.xz
-          SDK_DIR="$(echo "$PWD"/openwrt-sdk-*)"
-          if [ ! -d "$SDK_DIR" ]; then
-            echo "SDK not unpacked"; exit 1
+          echo "Downloading toolchain for ${{ matrix.target }}..."
+          echo "URL: ${{ matrix.toolchain_url }}"
+          curl -fsSL "${{ matrix.toolchain_url }}" -o toolchain.tar.xz
+          mkdir -p /tmp/sdk-extract
+          tar -xf toolchain.tar.xz -C /tmp/sdk-extract
+          SDK_DIR=$(find /tmp/sdk-extract -name "openwrt-sdk-*" -type d | head -1)
+          if [ -z "$SDK_DIR" ]; then
+            echo "❌ Could not find SDK directory"
+            ls -la /tmp/sdk-extract/
+            exit 1
           fi
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-
-      - name: Locate toolchain & export env
-        shell: bash
-        run: |
-          set -eux
-          SDK_DIR="${SDK_DIR:?}"
-          TOOLCHAIN_DIR="$(find "$SDK_DIR/staging_dir" -maxdepth 1 -type d -name "*${{ matrix.toolchain_dir }}*" | head -n1)"
-          if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "Toolchain dir not found in $SDK_DIR/staging_dir"; ls -la "$SDK_DIR/staging_dir" || true; exit 1
-          fi
+          echo "SDK found at: $SDK_DIR"
+          export TOOLCHAIN_DIR="$SDK_DIR/staging_dir/${{ matrix.toolchain_dir }}"
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
 
-          BIN_DIR="$TOOLCHAIN_DIR/bin"
-          CC="$(ls "$BIN_DIR"/*-gcc | head -1)"
-          CXX="$(ls "$BIN_DIR"/*-g++ | head -1 || true)"
-          AR="$(ls "$BIN_DIR"/*-ar | head -1)"
-          STRIP="$(ls "$BIN_DIR"/*-strip | head -1)"
-          RANLIB="$(ls "$BIN_DIR"/*-ranlib | head -1)"
-
+      - name: Setup cross-compilation environment
+        run: |
+          set -eux
+          echo "Setting up cross-compilation for ${{ matrix.target }}"
+          echo "Toolchain directory: $TOOLCHAIN_DIR"
+          CC=$(find "$TOOLCHAIN_DIR/bin" -name "*-gcc" | head -1)
+          AR=$(find "$TOOLCHAIN_DIR/bin" -name "*-ar" | head -1)
+          STRIP=$(find "$TOOLCHAIN_DIR/bin" -name "*-strip" | head -1)
+          RANLIB=$(find "$TOOLCHAIN_DIR/bin" -name "*-ranlib" | head -1)
+          
+          if [ -z "$CC" ] || [ -z "$AR" ]; then
+            echo "❌ Could not find compiler tools"
+            echo "Looking in: $TOOLCHAIN_DIR/bin/"
+            ls -la "$TOOLCHAIN_DIR/bin/" || echo "Directory not found"
+            exit 1
+          fi
+          
+          echo "Found CC: $CC"
+          echo "Found AR: $AR"
+          echo "Found STRIP: $STRIP"
+          echo "Found RANLIB: $RANLIB"
+          
+          if [ "${{ matrix.target }}" = "x86_64" ]; then
+            export CARGO_TARGET=x86_64-unknown-linux-musl
+            export TARGET_ARCH=x86_64
+          else
+            export CARGO_TARGET=aarch64-unknown-linux-musl
+            export TARGET_ARCH=aarch64
+          fi
+          
+          rustup target add $CARGO_TARGET
+          
           echo "CC=$CC" >> $GITHUB_ENV
-          echo "CXX=${CXX:-}" >> $GITHUB_ENV
           echo "AR=$AR" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
+          echo "CARGO_TARGET=$CARGO_TARGET" >> $GITHUB_ENV
+          echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
 
-          echo "TARGET_ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "CARGO_TARGET=${{ matrix.cargo_target }}" >> $GITHUB_ENV
-
-      - name: Build ALSA (target)
-        shell: bash
+      - name: Check toolchain OpenSSL libraries
         run: |
           set -eux
-          SDK_DIR="${SDK_DIR:?}"; TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
-          TMPD="$(mktemp -d)"
-          cd "$TMPD"
-          curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa.tar.bz2
-          tar -xjf alsa.tar.bz2
+          echo "Checking for OpenSSL in toolchain..."
+          find $TOOLCHAIN_DIR -name "*ssl*" -type f | head -10 || echo "No SSL files found"
+          find $TOOLCHAIN_DIR -name "*crypto*" -type f | head -10 || echo "No crypto files found"
+          find $TOOLCHAIN_DIR -name "openssl*" -type f | head -10 || echo "No openssl files found"
+
+      - name: Build ALSA library from source
+        run: |
+          set -eux
+          echo "Building ALSA library for $TARGET_ARCH..."
+          curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa-lib.tar.bz2
+          tar -xf alsa-lib.tar.bz2
           cd alsa-lib-1.2.11
           ./configure \
-            --host="$(basename "$TOOLCHAIN_DIR")" \
-            --prefix="$TOOLCHAIN_DIR/usr" \
-            --with-configdir=/etc \
-            --disable-python --disable-ucm \
+            --host=$TARGET_ARCH-linux-musl \
+            --prefix=$TOOLCHAIN_DIR/usr \
+            --enable-static \
+            --disable-shared \
+            --with-pic \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            STRIP="$STRIP" \
+            --with-libdl=no \
             --with-pthread=yes
-          make -j"$(nproc)"
+          make -j$(nproc)
           make install
 
-      - name: Create ALSA pkg-config
-        shell: bash
+      - name: Create ALSA pkg-config file
         run: |
           set -eux
-          TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
-          mkdir -p "$TOOLCHAIN_DIR/usr/lib/pkgconfig"
-          PC="$TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc"
-          echo "prefix=$TOOLCHAIN_DIR/usr" > "$PC"
-          echo "exec_prefix=\${prefix}" >> "$PC"
-          echo "libdir=\${exec_prefix}/lib" >> "$PC"
-          echo "includedir=\${prefix}/include" >> "$PC"
-          echo "" >> "$PC"
-          echo "Name: alsa" >> "$PC"
-          echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> "$PC"
-          echo "Version: 1.2.11" >> "$PC"
-          echo "Requires:" >> "$PC"
-          echo "Libs: -L\${libdir} -lasound" >> "$PC"
-          echo "Libs.private: -lm -ldl -lpthread" >> "$PC"
-          echo "Cflags: -I\${includedir}" >> "$PC"
+          mkdir -p $TOOLCHAIN_DIR/usr/lib/pkgconfig
+          echo "prefix=$TOOLCHAIN_DIR/usr" > $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "exec_prefix=\${prefix}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "libdir=\${exec_prefix}/lib" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "includedir=\${prefix}/include" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Name: alsa" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Version: 1.2.11" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Requires: " >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Libs: -L\${libdir} -lasound" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Libs.private: -lm -ldl -lpthread" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
+          echo "Cflags: -I\${includedir}" >> $TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc
 
-      - name: Build OpenSSL (target)
-        shell: bash
+      - name: Build OpenSSL from source for target
         run: |
           set -eux
-          SDK_DIR="${SDK_DIR:?}"; TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
-          ARCH="${{ matrix.arch }}"
-          TMPD="$(mktemp -d)"
-          cd "$TMPD"
+          echo "Building OpenSSL for target $TARGET_ARCH..."
+          
+          # Install perl untuk build OpenSSL
+          sudo apt-get install -y perl
+          
           curl -fsSL https://www.openssl.org/source/openssl-1.1.1w.tar.gz -o openssl.tar.gz
-          tar -xzf openssl.tar.gz
+          tar -xf openssl.tar.gz
           cd openssl-1.1.1w
+          
+          # Configure untuk cross-compilation
+          if [ "${{ matrix.target }}" = "x86_64" ]; then
+            ./Configure linux-x86_64 \
+              --prefix=$TOOLCHAIN_DIR/usr \
+              --openssldir=$TOOLCHAIN_DIR/usr \
+              no-shared \
+              no-zlib \
+              no-async \
+              -fPIC \
+              -static
+          else
+            ./Configure linux-aarch64 \
+              --prefix=$TOOLCHAIN_DIR/usr \
+              --openssldir=$TOOLCHAIN_DIR/usr \
+              no-shared \
+              no-zlib \
+              no-async \
+              -fPIC \
+              -static
+          fi
+          
+          make -j$(nproc)
+          make install
 
-          CC="${CC:?}" AR="${AR:?}" RANLIB="${RANLIB:?}"
-          OPENSSL_PREFIX="$TOOLCHAIN_DIR/usr"
-          if [ "$ARCH" = "x86_64" ]; then CONF="linux-x86_64"; else CONF="linux-aarch64"; fi
-
-          echo "Configuring OpenSSL with $CONF"
-          ./Configure "$CONF" no-shared no-ssl3 no-comp no-dso no-tests --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl"
-          make -j"$(nproc)"
-          make install_sw
-
-      - name: Export pkg-config & OpenSSL env
-        shell: bash
+      - name: Setup environment variables
         run: |
           set -eux
-          TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR"
+          export PKG_CONFIG_PATH="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$TOOLCHAIN_DIR/usr/lib/pkgconfig:$TOOLCHAIN_DIR/lib/pkgconfig"
+          export OPENSSL_DIR="$TOOLCHAIN_DIR/usr"
+          export OPENSSL_LIB_DIR="$TOOLCHAIN_DIR/usr/lib"
+          export OPENSSL_INCLUDE_DIR="$TOOLCHAIN_DIR/usr/include"
+          export OPENSSL_STATIC=1
+          
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$TOOLCHAIN_DIR/usr/lib/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_LIBDIR=$TOOLCHAIN_DIR/usr/lib/pkgconfig" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=$TOOLCHAIN_DIR/usr" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$TOOLCHAIN_DIR/usr/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$TOOLCHAIN_DIR/usr/include" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$OPENSSL_LIB_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
 
-      # >>>>> SATU-SATUNYA BAGIAN YANG DIUBAH: patch librespot dari packages <<<<<
-      - name: Apply librespot patches (from packages)
-        shell: bash
-        run: |
-          set -eux
-          if [ -d package/sound/spotifyd-ng/patches ]; then
-            ls -la package/sound/spotifyd-ng/patches
-            cd spotifyd-src
-            # hapus lock agar resolusi sesuai patch/patch.crates-io
-            rm -f Cargo.lock || true
-            for p in ../package/sound/spotifyd-ng/patches/*.patch; do
-              echo "Applying $p"
-              git apply --index "$p" || patch -p1 < "$p"
-            done
-            # opsional sinkronisasi dependency setelah patch
-            cargo update --verbose
-          else
-            echo "patch directory package/sound/spotifyd-ng/patches not found"; exit 1
-          fi
-      # <<<<< END perubahan, langkah lain TETAP seperti skrip asli >>>>>
-
-      - name: Build spotifyd (cargo cross)
-        shell: bash
-        env:
-          CC: ${{ env.CC }}
-          CXX: ${{ env.CXX }}
-          AR: ${{ env.AR }}
-          STRIP: ${{ env.STRIP }}
-          RANLIB: ${{ env.RANLIB }}
-          PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
-          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
-          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
-          PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
-          OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
-          OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
-          OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
-          OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
+      - name: Modify librespot dependencies to v0.7.1
         run: |
           set -eux
           cd spotifyd-src
-          rustup target add "${{ matrix.cargo_target }}"
-          RUSTFLAGS="-C target-feature=+crt-static" \
-          cargo build --release --target "${{ matrix.cargo_target }}"
-          $STRIP "target/${{ matrix.cargo_target }}/release/spotifyd"
+          cp Cargo.toml Cargo.toml.original
+          
+          # Ubah semua dependencies librespot ke v0.7.1 dari GitHub
+          sed -i 's|librespot-audio = { version = "0.6", default-features = false }|librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
+          sed -i 's|librespot-playback = { version = "0.6", default-features = false }|librespot-playback = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1", default-features = false }|g' Cargo.toml
+          sed -i 's|librespot-core = "0.6"|librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-discovery = "0.6"|librespot-discovery = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-connect = "0.6"|librespot-connect = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-metadata = "0.6"|librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-protocol = "0.6"|librespot-protocol = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          sed -i 's|librespot-oauth = "0.6"|librespot-oauth = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.7.1" }|g' Cargo.toml
+          
+          rm -f Cargo.lock
+          cargo update --verbose
 
-      - name: Create OpenWRT package (IPK)
-        shell: bash
+      - name: Apply compatibility patches for librespot v0.7.1
         run: |
           set -eux
-          ARCH="${{ matrix.arch }}"
-          CARGO_TARGET="${{ matrix.cargo_target }}"
+          cd spotifyd-src
+          
+          # Patch 1: Perbaikan import yang berubah di librespot_connect
+          sed -i 's|use librespot_connect::{config::ConnectConfig, spirc::Spirc};|use librespot_connect::spirc::Spirc;\nuse librespot_connect::config::ConnectConfig;|g' src/main_loop.rs
+          
+          # Patch 2: Perbaikan return type untuk mixer (harus mengembalikan Result)
+          sed -i 's|fn open(_: MixerConfig) -> AlsaMixer|fn open(_: MixerConfig) -> Result<AlsaMixer, librespot_core::Error>|g' src/alsa_mixer.rs
+          sed -i 's|fn open(_: MixerConfig) -> NoMixer|fn open(_: MixerConfig) -> Result<NoMixer, librespot_core::Error>|g' src/no_mixer.rs
+          
+          # Patch 3: Tambahkan return Ok() untuk mixer functions
+          sed -i '/fn open(_: MixerConfig) -> Result<AlsaMixer, librespot_core::Error>/,/^    }$/ {
+            /^    }$/i \
+        Ok(AlsaMixer)
+          }' src/alsa_mixer.rs
+          
+          sed -i '/fn open(_: MixerConfig) -> Result<NoMixer, librespot_core::Error>/,/^    }$/ {
+            /^    }$/i \
+        Ok(NoMixer)
+          }' src/no_mixer.rs
+          
+          # Patch 4: Perbaikan DeviceType (HomeThing tidak ada di v0.7.1)
+          sed -i 's|DeviceType::HomeThing => LSDeviceType::HomeThing,|// DeviceType::HomeThing => LSDeviceType::HomeThing, // Removed in librespot v0.7.1|g' src/config.rs
+          
+          # Patch 5: Perbaikan PlayerEvent::RepeatChanged structure
+          sed -i 's|PlayerEvent::RepeatChanged { repeat } => {|PlayerEvent::RepeatChanged { repeat, context: _, track: _ } => {|g' src/process.rs
+          
+          # Patch 6: Perbaikan SoftMixer open call untuk mengembalikan Result
+          sed -i 's|Arc::new(mixer::softmixer::SoftMixer::open(MixerConfig::default()))|Arc::new(mixer::softmixer::SoftMixer::open(MixerConfig::default()).unwrap())|g' src/setup.rs
+          
+          echo "Compatibility patches applied successfully"
+
+      - name: Build spotifyd
+        run: |
+          set -eux
+          cd spotifyd-src
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export RUSTFLAGS="-C linker=$CC -C ar=$AR -C target-feature=+crt-static -L $TOOLCHAIN_DIR/usr/lib -l asound -l dl -l pthread -l m -l ssl -l crypto"
+          
+          CARGO_HOME="$HOME/.cargo" \
+          RUSTFLAGS="$RUSTFLAGS" \
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          PKG_CONFIG_SYSROOT_DIR="$TOOLCHAIN_DIR" \
+          PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+          OPENSSL_DIR="$OPENSSL_DIR" \
+          OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
+          OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
+          OPENSSL_STATIC=1 \
+          CC="$CC" \
+          AR="$AR" \
+          cargo build \
+            --release \
+            --no-default-features \
+            --features alsa_backend \
+            --target $CARGO_TARGET
+          
+          $STRIP target/$CARGO_TARGET/release/spotifyd
+
+      - name: Create OpenWRT package
+        run: |
+          set -eux
           mkdir -p spotifyd-ng_control
           echo "Package: spotifyd-ng" > spotifyd-ng_control/control
           echo "Version: 0.4.1-1" >> spotifyd-ng_control/control
@@ -224,20 +307,19 @@ jobs:
           echo "Category: Sound" >> spotifyd-ng_control/control
           echo "Title: Spotify daemon" >> spotifyd-ng_control/control
           echo "Maintainer: Build Bot <noreply@github.com>" >> spotifyd-ng_control/control
-          echo "Architecture: $ARCH" >> spotifyd-ng_control/control
+          echo "Architecture: ${{ matrix.arch }}" >> spotifyd-ng_control/control
           echo "Description: A spotify playing daemon for OpenWrt." >> spotifyd-ng_control/control
-
+          
           mkdir -p spotifyd-ng_data/usr/bin
-          cp "spotifyd-src/target/$CARGO_TARGET/release/spotifyd" spotifyd-ng_data/usr/bin/
+          cp spotifyd-src/target/$CARGO_TARGET/release/spotifyd spotifyd-ng_data/usr/bin/
           chmod +x spotifyd-ng_data/usr/bin/spotifyd
-
+          
           cd spotifyd-ng_data && tar -czf ../data.tar.gz . && cd ..
           cd spotifyd-ng_control && tar -czf ../control.tar.gz . && cd ..
           echo "2.0" > debian-binary
-          tar -czf "spotifyd-ng_${ARCH}.ipk" ./debian-binary ./data.tar.gz ./control.tar.gz
-
-          mkdir -p "output/${{ matrix.target }}"
-          mv "spotifyd-ng_${ARCH}.ipk" "output/${{ matrix.target }}/"
+          tar -czf spotifyd-ng_${{ matrix.arch }}.ipk ./debian-binary ./data.tar.gz ./control.tar.gz
+          mkdir -p output/${{ matrix.target }}
+          mv spotifyd-ng_${{ matrix.arch }}.ipk output/${{ matrix.target }}/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -247,9 +329,8 @@ jobs:
           if-no-files-found: error
 
       - name: Final verification
-        shell: bash
         run: |
-          set -eux
           echo "Build process completed!"
-          ls -la "output/${{ matrix.target }}/"
-          
+          ls -la output/${{ matrix.target }}/
+          echo "Checking binary compatibility..."
+          file output/${{ matrix.target }}/*.ipk
