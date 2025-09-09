@@ -3,14 +3,14 @@ name: build-spotifyd
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
     paths:
-      - 'package/**'
-      - '.github/workflows/build-spotifyd.yaml'
+      - "package/**"
+      - ".github/workflows/build-spotifyd.yaml"
 
 jobs:
   build:
-    name: build (${{ matrix.target }} | ${{ matrix.pretty }})
+    name: "build (${{ matrix.target }} | ${{ matrix.pretty }})"
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -18,18 +18,19 @@ jobs:
         include:
           - target: x86_64
             pretty: x86-64
-            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            sdk: "https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           - target: aarch64_generic
             pretty: mediatek-filogic
-            sdk: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            sdk: "https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Host deps seperti script aslinya: ALSA, OpenSSL, pkg-config, dll
-      - name: System deps (ALSA, OpenSSL, build tools)
+      - name: System deps (ALSA, OpenSSL, tools)
+        shell: bash
         run: |
+          set -eux
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang llvm patch xz-utils tar gzip bzip2 unzip \
@@ -37,68 +38,51 @@ jobs:
             pkg-config libasound2-dev libssl-dev zlib1g-dev cmake perl \
             dos2unix
 
-      # Opsional: siapkan Rust host (gaya script aslinya) untuk konsistensi toolchain
       - name: Rust toolchain (host)
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.82.0
 
       - name: Download & unpack OpenWrt SDK
+        shell: bash
         run: |
+          set -eux
           mkdir -p "$GITHUB_WORKSPACE/_sdk"
           cd "$GITHUB_WORKSPACE/_sdk"
           wget -O sdk.tar.xz "${{ matrix.sdk }}"
           tar -xJf sdk.tar.xz
           SDK_DIR="$(echo "$GITHUB_WORKSPACE/_sdk"/openwrt-sdk-*)"
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+          echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
       - name: Prepare package tree (copy your package + patches)
+        shell: bash
         run: |
           set -eux
-          # Salin seluruh folder package lokal ke dalam SDK
-          rsync -a --delete package/ "$SDK_DIR/package/"
+          rsync -a --delete "package/" "$SDK_DIR/package/"
 
-          # Pastikan folder patches untuk spotifyd-ng ada dan berisi file *.patch (kamu simpan manual)
+          # Pastikan patch ada di packages (BUKAN src)
           test -d "$SDK_DIR/package/sound/spotifyd-ng/patches"
           ls -la "$SDK_DIR/package/sound/spotifyd-ng/patches"
 
-          # CATATAN:
-          # - Patch kompat librespots 0.7.x wajib ada di folder di atas, contoh:
-          #   0001-mixer-open-returns-Result.patch
-          #   0002-softmixer-open-unwrap-result.patch
-          #   0003-player-event-repeatchanged-rest.patch
-          #   0004-remove-HomeThing-device-type.patch
-          #   0005-connect-imports-minimal-refactor.patch   (placeholder; sesuaikan init Connect)
-          #   0006-cargo-pin-librespot-0.7.1.patch          (pin lewat [patch.crates-io])
-          # - Workflow TIDAK memodifikasi Cargo.toml via sed; semuanya lewat patch OpenWrt.
-
-      - name: Feeds & config (SDK)
-        run: |
-          set -eux
-          cd "$SDK_DIR"
-          ./scripts/feeds update -a || true
-          ./scripts/feeds install -a || true
-
-      - name: Optional: Fix line endings & whitespace
-        run: |
-          set -eux
-          cd "$SDK_DIR"
-          if [ -f package/sound/spotifyd-ng/Makefile ]; then
-            dos2unix package/sound/spotifyd-ng/Makefile || true
-            if grep -n '^[ ]\+' package/sound/spotifyd-ng/Makefile; then
-              echo "WARN: Found leading spaces in Makefile command lines."
-            fi
+          # Rapikan EOL Makefile (hindari error LF)
+          if [ -f "$SDK_DIR/package/sound/spotifyd-ng/Makefile" ]; then
+            dos2unix "$SDK_DIR/package/sound/spotifyd-ng/Makefile" || true
           fi
 
+      # ⚠️ Tidak ada langkah feeds/update/install — sesuai permintaan:
+      # build langsung paket spotifyd-ng di dalam SDK
+
       - name: Build package (patches applied during prepare)
+        shell: bash
         run: |
           set -eux
           cd "$SDK_DIR"
-          # Fase prepare akan mengaplikasikan semua patch di package/sound/spotifyd-ng/patches
+          # Fase prepare akan otomatis mengaplikasikan semua patch di package/sound/spotifyd-ng/patches
           make package/spotifyd-ng/{clean,prepare} V=s
           make package/spotifyd-ng/compile V=s
 
       - name: Collect artifacts
+        shell: bash
         run: |
           set -eux
           cd "$SDK_DIR"
@@ -109,5 +93,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: spotifyd-${{ matrix.pretty }}
-          path: _artifacts/${{ matrix.pretty }}/
+          name: "spotifyd-${{ matrix.pretty }}"
+          path: "_artifacts/${{ matrix.pretty }}/"
+          if-no-files-found: warn
