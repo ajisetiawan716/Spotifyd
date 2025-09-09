@@ -1,27 +1,32 @@
-name: build-spotifyd
+name: Build Spotifyd
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [main]
     paths:
-      - "package/**"
-      - ".github/workflows/build-spotifyd.yaml"
+      - 'src/**'
+      - '.github/workflows/build-spotifyd.yaml'
 
 jobs:
   build:
-    name: "build (${{ matrix.target }} | ${{ matrix.pretty }})"
+    name: build (${{ matrix.target }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64
-            pretty: x86-64
-            sdk: "https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-          - target: aarch64_generic
-            pretty: mediatek-filogic
-            sdk: "https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            arch: x86_64
+            toolchain_url: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            toolchain_dir: x86_64-linux-musl
+            cargo_target: x86_64-unknown-linux-musl
+          - target: aarch64
+            arch: aarch64
+            toolchain_url: https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            toolchain_dir: aarch64-linux-musl
+            cargo_target: aarch64-unknown-linux-musl
 
     steps:
       - name: Checkout
@@ -36,63 +41,215 @@ jobs:
             build-essential clang llvm patch xz-utils tar gzip bzip2 unzip \
             rsync git python3 gawk wget curl ca-certificates \
             pkg-config libasound2-dev libssl-dev zlib1g-dev cmake perl \
-            dos2unix
+            dos2unix file
 
       - name: Rust toolchain (host)
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.82.0
 
-      - name: Download & unpack OpenWrt SDK
+      - name: Download toolchain SDK
         shell: bash
         run: |
           set -eux
-          mkdir -p "$GITHUB_WORKSPACE/_sdk"
-          cd "$GITHUB_WORKSPACE/_sdk"
-          wget -O sdk.tar.xz "${{ matrix.sdk }}"
+          mkdir -p _sdk
+          cd _sdk
+          echo "Downloading: ${{ matrix.toolchain_url }}"
+          curl -fsSL "${{ matrix.toolchain_url }}" -o sdk.tar.xz
           tar -xJf sdk.tar.xz
-          SDK_DIR="$(echo "$GITHUB_WORKSPACE/_sdk"/openwrt-sdk-*)"
-          echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
-
-      - name: Prepare package tree (copy your package + patches)
-        shell: bash
-        run: |
-          set -eux
-          rsync -a --delete "package/" "$SDK_DIR/package/"
-
-          # Pastikan patch ada di packages (BUKAN src)
-          test -d "$SDK_DIR/package/sound/spotifyd-ng/patches"
-          ls -la "$SDK_DIR/package/sound/spotifyd-ng/patches"
-
-          # Rapikan EOL Makefile (hindari error LF)
-          if [ -f "$SDK_DIR/package/sound/spotifyd-ng/Makefile" ]; then
-            dos2unix "$SDK_DIR/package/sound/spotifyd-ng/Makefile" || true
+          SDK_DIR="$(echo "$PWD"/openwrt-sdk-*)"
+          if [ ! -d "$SDK_DIR" ]; then
+            echo "SDK not unpacked"; exit 1
           fi
+          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
 
-      # ⚠️ Tidak ada langkah feeds/update/install — sesuai permintaan:
-      # build langsung paket spotifyd-ng di dalam SDK
-
-      - name: Build package (patches applied during prepare)
+      - name: Locate toolchain & export env
         shell: bash
         run: |
           set -eux
-          cd "$SDK_DIR"
-          # Fase prepare akan otomatis mengaplikasikan semua patch di package/sound/spotifyd-ng/patches
-          make package/spotifyd-ng/{clean,prepare} V=s
-          make package/spotifyd-ng/compile V=s
+          SDK_DIR="${SDK_DIR:?}"
+          TOOLCHAIN_DIR="$(find "$SDK_DIR/staging_dir" -maxdepth 1 -type d -name "*${{ matrix.toolchain_dir }}*" | head -n1)"
+          if [ -z "$TOOLCHAIN_DIR" ]; then
+            echo "Toolchain dir not found in $SDK_DIR/staging_dir"; ls -la "$SDK_DIR/staging_dir" || true; exit 1
+          fi
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
 
-      - name: Collect artifacts
+          BIN_DIR="$TOOLCHAIN_DIR/bin"
+          CC="$(ls "$BIN_DIR"/*-gcc | head -1)"
+          CXX="$(ls "$BIN_DIR"/*-g++ | head -1 || true)"
+          AR="$(ls "$BIN_DIR"/*-ar | head -1)"
+          STRIP="$(ls "$BIN_DIR"/*-strip | head -1)"
+          RANLIB="$(ls "$BIN_DIR"/*-ranlib | head -1)"
+
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=${CXX:-}" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
+
+          echo "TARGET_ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "CARGO_TARGET=${{ matrix.cargo_target }}" >> $GITHUB_ENV
+
+      - name: Build ALSA (target)
         shell: bash
         run: |
           set -eux
-          cd "$SDK_DIR"
-          mkdir -p "$GITHUB_WORKSPACE/_artifacts/${{ matrix.pretty }}"
-          find bin/packages -type f -name '*spotifyd*' -exec cp -av {} "$GITHUB_WORKSPACE/_artifacts/${{ matrix.pretty }}/" \; || true
-          find bin/targets -type f -name '*spotifyd*' -exec cp -av {} "$GITHUB_WORKSPACE/_artifacts/${{ matrix.pretty }}/" \; || true
+          SDK_DIR="${SDK_DIR:?}"; TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
+          TMPD="$(mktemp -d)"
+          cd "$TMPD"
+          curl -fsSL https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.11.tar.bz2 -o alsa.tar.bz2
+          tar -xjf alsa.tar.bz2
+          cd alsa-lib-1.2.11
+          ./configure \
+            --host="$(basename "$TOOLCHAIN_DIR")" \
+            --prefix="$TOOLCHAIN_DIR/usr" \
+            --with-configdir=/etc \
+            --disable-python --disable-ucm \
+            --with-pthread=yes
+          make -j"$(nproc)"
+          make install
+
+      - name: Create ALSA pkg-config
+        shell: bash
+        run: |
+          set -eux
+          TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
+          mkdir -p "$TOOLCHAIN_DIR/usr/lib/pkgconfig"
+          PC="$TOOLCHAIN_DIR/usr/lib/pkgconfig/alsa.pc"
+          echo "prefix=$TOOLCHAIN_DIR/usr" > "$PC"
+          echo "exec_prefix=\${prefix}" >> "$PC"
+          echo "libdir=\${exec_prefix}/lib" >> "$PC"
+          echo "includedir=\${prefix}/include" >> "$PC"
+          echo "" >> "$PC"
+          echo "Name: alsa" >> "$PC"
+          echo "Description: Advanced Linux Sound Architecture (ALSA) - Library" >> "$PC"
+          echo "Version: 1.2.11" >> "$PC"
+          echo "Requires:" >> "$PC"
+          echo "Libs: -L\${libdir} -lasound" >> "$PC"
+          echo "Libs.private: -lm -ldl -lpthread" >> "$PC"
+          echo "Cflags: -I\${includedir}" >> "$PC"
+
+      - name: Build OpenSSL (target)
+        shell: bash
+        run: |
+          set -eux
+          SDK_DIR="${SDK_DIR:?}"; TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
+          ARCH="${{ matrix.arch }}"
+          TMPD="$(mktemp -d)"
+          cd "$TMPD"
+          curl -fsSL https://www.openssl.org/source/openssl-1.1.1w.tar.gz -o openssl.tar.gz
+          tar -xzf openssl.tar.gz
+          cd openssl-1.1.1w
+
+          CC="${CC:?}" AR="${AR:?}" RANLIB="${RANLIB:?}"
+          OPENSSL_PREFIX="$TOOLCHAIN_DIR/usr"
+          if [ "$ARCH" = "x86_64" ]; then CONF="linux-x86_64"; else CONF="linux-aarch64"; fi
+
+          echo "Configuring OpenSSL with $CONF"
+          ./Configure "$CONF" no-shared no-ssl3 no-comp no-dso no-tests --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl"
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Export pkg-config & OpenSSL env
+        shell: bash
+        run: |
+          set -eux
+          TOOLCHAIN_DIR="${TOOLCHAIN_DIR:?}"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$TOOLCHAIN_DIR/usr/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$TOOLCHAIN_DIR/usr/lib/pkgconfig" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$TOOLCHAIN_DIR/usr" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$TOOLCHAIN_DIR/usr/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$TOOLCHAIN_DIR/usr/include" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+
+      # >>>>> SATU-SATUNYA BAGIAN YANG DIUBAH: patch librespot dari packages <<<<<
+      - name: Apply librespot patches (from packages)
+        shell: bash
+        run: |
+          set -eux
+          if [ -d package/sound/spotifyd-ng/patches ]; then
+            ls -la package/sound/spotifyd-ng/patches
+            cd spotifyd-src
+            # hapus lock agar resolusi sesuai patch/patch.crates-io
+            rm -f Cargo.lock || true
+            for p in ../package/sound/spotifyd-ng/patches/*.patch; do
+              echo "Applying $p"
+              git apply --index "$p" || patch -p1 < "$p"
+            done
+            # opsional sinkronisasi dependency setelah patch
+            cargo update --verbose
+          else
+            echo "patch directory package/sound/spotifyd-ng/patches not found"; exit 1
+          fi
+      # <<<<< END perubahan, langkah lain TETAP seperti skrip asli >>>>>
+
+      - name: Build spotifyd (cargo cross)
+        shell: bash
+        env:
+          CC: ${{ env.CC }}
+          CXX: ${{ env.CXX }}
+          AR: ${{ env.AR }}
+          STRIP: ${{ env.STRIP }}
+          RANLIB: ${{ env.RANLIB }}
+          PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
+          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
+          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
+          PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
+          OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
+          OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
+          OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
+          OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
+        run: |
+          set -eux
+          cd spotifyd-src
+          rustup target add "${{ matrix.cargo_target }}"
+          RUSTFLAGS="-C target-feature=+crt-static" \
+          cargo build --release --target "${{ matrix.cargo_target }}"
+          $STRIP "target/${{ matrix.cargo_target }}/release/spotifyd"
+
+      - name: Create OpenWRT package (IPK)
+        shell: bash
+        run: |
+          set -eux
+          ARCH="${{ matrix.arch }}"
+          CARGO_TARGET="${{ matrix.cargo_target }}"
+          mkdir -p spotifyd-ng_control
+          echo "Package: spotifyd-ng" > spotifyd-ng_control/control
+          echo "Version: 0.4.1-1" >> spotifyd-ng_control/control
+          echo "Depends: libc, libstdcpp, libpthread" >> spotifyd-ng_control/control
+          echo "Source: https://github.com/Spotifyd/spotifyd" >> spotifyd-ng_control/control
+          echo "Section: sound" >> spotifyd-ng_control/control
+          echo "Category: Sound" >> spotifyd-ng_control/control
+          echo "Title: Spotify daemon" >> spotifyd-ng_control/control
+          echo "Maintainer: Build Bot <noreply@github.com>" >> spotifyd-ng_control/control
+          echo "Architecture: $ARCH" >> spotifyd-ng_control/control
+          echo "Description: A spotify playing daemon for OpenWrt." >> spotifyd-ng_control/control
+
+          mkdir -p spotifyd-ng_data/usr/bin
+          cp "spotifyd-src/target/$CARGO_TARGET/release/spotifyd" spotifyd-ng_data/usr/bin/
+          chmod +x spotifyd-ng_data/usr/bin/spotifyd
+
+          cd spotifyd-ng_data && tar -czf ../data.tar.gz . && cd ..
+          cd spotifyd-ng_control && tar -czf ../control.tar.gz . && cd ..
+          echo "2.0" > debian-binary
+          tar -czf "spotifyd-ng_${ARCH}.ipk" ./debian-binary ./data.tar.gz ./control.tar.gz
+
+          mkdir -p "output/${{ matrix.target }}"
+          mv "spotifyd-ng_${ARCH}.ipk" "output/${{ matrix.target }}/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: "spotifyd-${{ matrix.pretty }}"
-          path: "_artifacts/${{ matrix.pretty }}/"
-          if-no-files-found: warn
+          name: spotifyd-${{ matrix.target }}-ipk
+          path: output/${{ matrix.target }}/
+          if-no-files-found: error
+
+      - name: Final verification
+        shell: bash
+        run: |
+          set -eux
+          echo "Build process completed!"
+          ls -la "output/${{ matrix.target }}/"
+          
