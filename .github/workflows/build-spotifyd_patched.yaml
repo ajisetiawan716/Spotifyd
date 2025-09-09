@@ -221,9 +221,10 @@ jobs:
         with:
           path: repo_root
           fetch-depth: 1
+          ref: ${{ github.ref }}
           sparse-checkout: |
             package/sound/spotifyd-ng/patches
-          sparse-checkout-cone: false
+          sparse-checkout-cone-mode: true
 
           
       - name: Apply librespot patches
@@ -231,7 +232,7 @@ jobs:
         run: |
           set -eux
 
-          PATCH_DIR="$GITHUB_WORKSPACE/package/sound/spotifyd-ng/patches"
+          PATCH_DIR="$GITHUB_WORKSPACE/repo_root/package/sound/spotifyd-ng/patches"
 
           # Debug kecil biar kelihatan isi repo & folder patch
           ls -la "$GITHUB_WORKSPACE" || true
